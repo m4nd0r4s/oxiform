@@ -82,3 +82,9 @@ fn enforces_size_limits() {
         );
     }
 }
+
+#[test]
+fn places_syntax_errors_at_the_key_being_read() {
+    let report = decode(&plain(TypeDescription::Any), "{\"a\": {\"b\": }}").unwrap_err();
+    assert_eq!(report.issues[0].pointer(), "/a/b");
+}
