@@ -1,19 +1,25 @@
 //! Structures: named fields read from a map.
 
-use super::{Executor, Step, Stop};
+use std::borrow::Cow;
+
+use smallvec::{SmallVec, smallvec};
+
+use super::{Executor, PathStep, Step, Stop};
 use crate::description::UnknownFields;
 use crate::events::{Event, EventReader};
-use crate::issues::{ErrorCode, PathSegment};
+use crate::issues::ErrorCode;
 use crate::plan::{StructId, StructPlan};
 use crate::sink::Sink;
 
 /// The fields read so far.
 struct Slots<V> {
-    values: Vec<Option<V>>,
-    seen: Vec<bool>,
+    values: SmallVec<[Option<V>; 16]>,
+    seen: SmallVec<[bool; 16]>,
+    /// The field expected next, assuming keys come in declaration order.
+    expected: usize,
 }
 
-impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
+impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn structure(&mut self, id: StructId, event: Event<'input>) -> Step<S> {
         let plan = self.plan;
         let structure = plan.struct_plan(id);
@@ -22,7 +28,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         }
         let mut slots = Slots {
             values: structure.fields.iter().map(|_| None).collect(),
-            seen: vec![false; structure.fields.len()],
+            seen: smallvec![false; structure.fields.len()],
+            expected: 0,
         };
         let mut valid = true;
         let mut keys = 0;
@@ -37,8 +44,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the map"));
             }
             self.check_string_size(&key)?;
-            self.path.push(PathSegment::Key(key.to_string()));
-            let field = self.field(structure, &key, &mut slots);
+            let index = structure.find_field(&key, slots.expected);
+            self.path.push(PathStep::Key(key));
+            let field = self.field(structure, index, &mut slots);
             self.path.pop();
             valid &= field?;
         }
@@ -46,18 +54,19 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         if !valid {
             return Ok(None);
         }
-        self.emit(|sink| sink.instance(id, slots.values))
+        self.emit(|sink| sink.instance(id, &mut slots.values))
     }
 
-    /// Reads the value of `key`, with the path already at the key. Returns whether it is valid.
+    /// Reads the value of field `index` (`None`: an unknown key), with the path already at
+    /// the key. Returns whether it is valid.
     fn field(
         &mut self,
         structure: &StructPlan,
-        key: &str,
+        index: Option<usize>,
         slots: &mut Slots<S::Value>,
     ) -> Result<bool, Stop<S::Error>> {
         let value_event = self.next_event()?;
-        let Some(index) = structure.field_index(key) else {
+        let Some(index) = index else {
             let forbidden = structure.unknown_fields == UnknownFields::Forbid;
             if forbidden {
                 self.report(
@@ -71,16 +80,18 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
             return Ok(!forbidden);
         };
         if slots.seen[index] {
+            let key = structure.fields[index].wire_name.clone();
             self.report(
                 ErrorCode::DuplicateKey,
                 "duplicate key".into(),
-                Some(key.into()),
+                Some(key),
                 Vec::new(),
             )?;
             self.skip_value(value_event)?;
             return Ok(false);
         }
         slots.seen[index] = true;
+        slots.expected = index + 1;
         match self.value(structure.fields[index].value, value_event)? {
             Some(value) => {
                 slots.values[index] = Some(value);
@@ -99,7 +110,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         let mut complete = true;
         for (field, was_seen) in structure.fields.iter().zip(seen) {
             if !was_seen && !field.has_default {
-                self.path.push(PathSegment::Key(field.wire_name.clone()));
+                self.path
+                    .push(PathStep::Key(Cow::Owned(field.wire_name.clone())));
                 let reported = self.report(
                     ErrorCode::Missing,
                     "field required".into(),

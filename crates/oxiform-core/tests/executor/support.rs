@@ -30,6 +30,7 @@ pub struct ValueSink;
 impl Sink for ValueSink {
     type Value = Value;
     type Error = Infallible;
+    type Map = Vec<(Value, Value)>;
 
     fn none(&mut self) -> Result<Value, Infallible> {
         Ok(Value::None)
@@ -52,15 +53,34 @@ impl Sink for ValueSink {
     fn list(&mut self, items: Vec<Value>) -> Result<Value, Infallible> {
         Ok(Value::List(items))
     }
-    fn dict(&mut self, entries: Vec<(Value, Value)>) -> Result<Value, Infallible> {
-        Ok(Value::Dict(entries))
+    fn map_new(&mut self) -> Result<Self::Map, Infallible> {
+        Ok(Vec::new())
+    }
+    fn map_insert(
+        &mut self,
+        map: &mut Self::Map,
+        key: &str,
+        value: Value,
+    ) -> Result<bool, Infallible> {
+        let key = Value::String(key.into());
+        if map.iter().any(|(existing, _)| *existing == key) {
+            return Ok(false);
+        }
+        map.push((key, value));
+        Ok(true)
+    }
+    fn map_finish(&mut self, map: Self::Map) -> Result<Value, Infallible> {
+        Ok(Value::Dict(map))
     }
     fn instance(
         &mut self,
         structure: StructId,
-        fields: Vec<Option<Value>>,
+        fields: &mut [Option<Value>],
     ) -> Result<Value, Infallible> {
-        Ok(Value::Instance(structure.index(), fields))
+        Ok(Value::Instance(
+            structure.index(),
+            fields.iter_mut().map(Option::take).collect(),
+        ))
     }
 }
 
