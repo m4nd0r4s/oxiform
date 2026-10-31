@@ -14,6 +14,9 @@ def json_decode(
 def json_decode(
     data: bytes | bytearray | memoryview | str, type: object, *, max_errors: int = 100
 ) -> Any: ...
+def warmup(*types: object) -> None:
+    """Compiles the plans of ``types`` now instead of on first use."""
+
 def json_encode(obj: object, *, indent: int | None = None, sort_keys: bool = False) -> bytes: ...
 
 class JsonEncoder:

@@ -1,7 +1,9 @@
 """Validate and (de)serialize Python types with a Rust engine."""
 
 from oxiform import json
-from oxiform._oxiform import __version__
+from oxiform._fields import field
+from oxiform._models import Model, model, replace
+from oxiform._oxiform import __version__, warmup
 from oxiform.constraints import Ge, Le, Len, OneOf, Pattern
 from oxiform.errors import (
     DecodeError,
@@ -10,7 +12,6 @@ from oxiform.errors import (
     SchemaError,
     ValidationError,
 )
-from oxiform.model import Model
 
 __all__ = [
     "DecodeError",
@@ -25,5 +26,9 @@ __all__ = [
     "SchemaError",
     "ValidationError",
     "__version__",
+    "field",
     "json",
+    "model",
+    "replace",
+    "warmup",
 ]

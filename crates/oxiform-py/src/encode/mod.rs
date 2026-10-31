@@ -208,14 +208,58 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
         table: &fields::FieldTable,
     ) -> Result<(), EncodeFailure> {
         self.enter()?;
-        self.writer.map_start(table.len());
-        for position in 0..table.len() {
-            let index = table.index(position, self.sort_keys);
-            let value = table.read(object, index)?;
-            self.entry(table.name(object.py(), index).to_str()?, &value)?;
+        if table.is_simple() {
+            self.writer.map_start(table.len());
+            for position in 0..table.len() {
+                let index = table.index(position, self.sort_keys);
+                let value = table.read(object, index)?;
+                self.entry(table.wire_name(object.py(), index).to_str()?, &value)?;
+            }
+        } else {
+            let mut entries = Vec::with_capacity(table.len());
+            self.collect_entries(object, table, &mut entries)?;
+            if self.sort_keys {
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+            }
+            self.writer.map_start(entries.len());
+            for (key, value) in entries {
+                self.entry(&key, &value)?;
+            }
         }
         self.writer.map_end();
         self.depth -= 1;
+        Ok(())
+    }
+
+    /// The entries of `object` that are written, with flattened models expanded in place.
+    fn collect_entries<'py>(
+        &mut self,
+        object: &Bound<'py, PyAny>,
+        table: &fields::FieldTable,
+        entries: &mut Vec<(String, Bound<'py, PyAny>)>,
+    ) -> Result<(), EncodeFailure> {
+        for index in 0..table.len() {
+            let field = table.field(index);
+            let value = table.read(object, index)?;
+            if field.omission.applies(&value)? {
+                continue;
+            }
+            let key = table.wire_name(object.py(), index).to_str()?;
+            if !field.flatten {
+                entries.push((key.to_owned(), value));
+                continue;
+            }
+            let Some(inner) = fields::field_table(&value.get_type())? else {
+                let type_name = value.get_type().qualname()?;
+                return Err(EncodeFailure::Unsupported {
+                    message: format!("a flattened field holds a model, not {type_name}"),
+                    path: vec![PathSegment::Key(key.to_owned())],
+                });
+            };
+            self.enter()?;
+            self.collect_entries(&value, inner.get(), entries)?;
+            self.depth -= 1;
+        }
         Ok(())
     }
 
