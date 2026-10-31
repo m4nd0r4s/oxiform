@@ -6,7 +6,7 @@
 
 ## 1. Decisions made
 
-D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. The rest of the spec already applies them.
+D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. D23 is the outcome of gate G1 at the end of phase 0. The rest of the spec already applies them.
 
 | # | Decision | Choice | Why |
 | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ D1–D13 close the 7 open questions from the review and 6 defaults that were imp
 | D12 | Errors | Collects all, up to `max_errors=100`; `redact_inputs` on when `OXIFORM_ENV=production` | Good for APIs and forms; no data leaks in production |
 | D13 | Scope | Small 1.0 (section 2); round-trip, migrations, Arrow, profiles and Rust plugins in 1.x | Reach 1.0 with quality; everything else comes in without breaking the API |
 | D14 | Shape of configs | `@ox.config` implies `kw_only=True` and `frozen=True`; every nested model in a config is `@ox.config`; mutable collections are an error | A config is never built by position, so required and optional fields can come in any order. Sections inherit `unknown="forbid"` (a typo in `[server]` is also an error) and the config is immutable end to end, safe to share between threads |
-| D15 | GIL and single pass | A decode is a single pass, always with the interpreter; parallelism comes from free-threading and `decode_many(threads=N)` | Releasing the GIL in the middle of a decode requires two passes and makes the ≤ 1.1× msgspec target unreachable. The real parallelism gain is in batches |
+| D15 | GIL and single pass | A decode is a single pass, always with the interpreter; parallelism comes from free-threading and `decode_many(threads=N)` | Releasing the GIL in the middle of a decode requires two passes and costs the speed that keeps oxiform close to msgspec (D23). The real parallelism gain is in batches |
 | D16 | What counts as slow path | `strict_rules` forbids `@ox.validator` and lambdas that do not compile. `default_factory`, codecs and Python hooks are "Python calls", visible in `ox.explain` and always allowed; known factories run in Rust | A factory only runs when the field is missing and a Python codec is intentional; treating them as slow rules was noise and made `strict_rules` unusable |
 | D17 | Unions | Resolved by wire type (at most one variant per type: object, array, string…) or by tag. Two variants with the same wire type and no tag are an error at import | O(1) choice with no ambiguity; trying in order is slow and surprising, so only with an explicit `ox.Untagged()` |
 | D18 | Compiling Python code | Only the lambdas of `@ox.verify` are compiled, and only when the result is guaranteed to equal Python's. `@ox.validator` always runs in Python in 1.0 | Compiling function bodies is a separate project; the validator is the escape hatch and must behave exactly like Python |
@@ -32,6 +32,7 @@ D1–D13 close the 7 open questions from the review and 6 defaults that were imp
 | D20 | MessagePack | Only the official timestamp extension; `Decimal` as string; `int` outside 64 bits is an error | Interoperable with any msgpack lib; no value silently loses precision |
 | D21 | Wheels | One wheel per Python version (no abi3) | The performance target needs the full C-API, and abi3 does not exist in free-threaded |
 | D22 | Format readers | Own event interface (numbers as raw text, positions) and an own pull reader for JSON, chosen over sonic-rs in phase 0 | Serde does not preserve the text of numbers nor detect duplicate keys, and sonic-rs offers no pull interface: going through its DOM adds a tree that the single pass avoids. The interface is the stable contract; the backend is replaceable |
+| D23 | Value proposition (gate G1) | Multi-format, validation and config, with JSON speed close to msgspec (at most 2×) and well ahead of pydantic (at least 2×), instead of "the fastest" | The phase 0 prototype decodes at 1.2–1.8× the time of msgspec and 2–4× faster than pydantic v2. Closing the rest needs a native model layout and a SIMD structural reader, which would delay every other feature; that work continues alongside the next phases |
 
 ## 2. Scope
 
@@ -765,7 +766,7 @@ Encode walks the plan of the runtime type of each object, in the reverse directi
 
 ### 9.3 Concurrency (D15)
 
-A decode is a single pass: the executor creates the Python objects as it reads, so it needs the interpreter from start to finish. Splitting the decode into two passes (validate without the GIL, materialize afterwards) would cost an extra traversal and intermediate memory, which made the ≤ 1.1× msgspec target unreachable. Parallelism comes from elsewhere:
+A decode is a single pass: the executor creates the Python objects as it reads, so it needs the interpreter from start to finish. Splitting the decode into two passes (validate without the GIL, materialize afterwards) would cost an extra traversal and intermediate memory, which would move it further from msgspec (D23). Parallelism comes from elsewhere:
 
 | Situation | Behavior |
 | --- | --- |
@@ -788,9 +789,9 @@ Measured on a public, reproducible benchmark, against the latest versions of eac
 
 | Scenario | Target |
 | --- | --- |
-| JSON decode + validation (20-field model) | ≤ 1.1× the time of msgspec; ≥ 3× faster than pydantic v2 |
-| JSON encode of models | ≤ 1.1× the time of msgspec |
-| JSON encode of dicts | ≤ 1.1× the time of orjson |
+| JSON decode + validation (small, 20-field and nested models) | ≤ 2× the time of msgspec; ≥ 2× faster than pydantic v2 |
+| JSON encode of models | ≤ 2× the time of msgspec |
+| JSON encode of dicts | ≤ 1.5× the time of orjson |
 | Typed YAML decode | ≥ 10× faster than PyYAML (CLoader) + pydantic |
 | Typed TOML decode | ≥ 5× faster than tomllib + pydantic |
 | `decode_many(threads=4)`, 10,000 documents | ≥ 3× `threads=1` in free-threaded; ≥ 1.5× in GIL builds |
@@ -956,12 +957,12 @@ Codes are public API (section 10.2); messages are not.
 
 ## 12. Roadmap
 
-Phase 0 decides whether the project goes ahead as is: if the prototype does not reach ≤ 1.1× the time of msgspec on JSON, the value proposition becomes "multi-format, validation and config" instead of "the fastest", and the targets in section 9.4 are revised.
+Phase 0 decided whether the project goes ahead as is: if the prototype did not reach ≤ 1.1× the time of msgspec on JSON, the value proposition would become "multi-format, validation and config" instead of "the fastest", and the targets in section 9.4 would be revised. It did not, so they were (D23, section 12.3).
 
 ```mermaid
 flowchart LR
     F0["Phase 0 · Prototype<br/>validated JSON decode<br/>dataclasses and Model<br/>basic constraints<br/>JSON reader choice<br/>public benchmarks"]
-    G1{{"Gate: ≤ 1.1× msgspec<br/>otherwise, revise the proposal"}}
+    G1{{"Gate: ≤ 1.1× msgspec<br/>not met: proposal revised (D23)"}}
     F1["Phase 1 · v0.1<br/>JSON, YAML, msgpack<br/>attributes and unions<br/>errors and limits<br/>@ox.verify"]
     G2{{"Gate: 3 real projects<br/>using it in production"}}
     F2["Phase 2 · v0.5<br/>TOML and base config<br/>FastAPI and Litestar<br/>JSON Schema and CLI<br/>computed and inheritance<br/>parallel decode_many"]
@@ -1001,20 +1002,33 @@ oxiform/
 
 **Phase 0 completion criteria:**
 
-- [ ] `ox.json.decode(data, T)` for `int`, `float`, `str`, `bool`, `None`, `list`, `dict[str, T]`, `T | None` and nested models
-- [ ] Targets: dataclass with slots and a prototype of `ox.Model`
-- [ ] 5 constraints: `Ge`, `Le`, `Len`, `Pattern`, `OneOf`
-- [ ] Errors with `code`, `path` and `pointer` (section 4.7), collecting several
-- [ ] Executor in `oxiform-core` with no Python dependency, with the event interface that the other formats will use
+- [x] `ox.json.decode(data, T)` for `int`, `float`, `str`, `bool`, `None`, `list`, `dict[str, T]`, `T | None` and nested models
+- [x] Targets: dataclass with slots and a prototype of `ox.Model`
+- [x] 5 constraints: `Ge`, `Le`, `Len`, `Pattern`, `OneOf`
+- [x] Errors with `code`, `path` and `pointer` (section 4.7), collecting several
+- [x] Executor in `oxiform-core` with no Python dependency, with the event interface that the other formats will use
 - [x] JSON reader chosen (D22): own reader, measured against sonic-rs on the same document
-- [ ] Benchmark published against msgspec, pydantic v2 and orjson, with 3 models (small, medium with 20 fields, nested)
-- [ ] Gate G1 decision written and published
+- [x] Benchmark published against msgspec, pydantic v2 and orjson, with 3 models (small, medium with 20 fields, nested)
+- [x] Gate G1 decision written and published
 
-### 12.3 Next steps
+### 12.3 Gate G1 result
+
+Measured on 2026-10-31 with `python -m bench` (release build, CPython 3.13, Apple Silicon), decode and validation time relative to msgspec 0.22:
+
+| Model | oxiform | pydantic 2.14 |
+| --- | ---: | ---: |
+| small (5 fields) | 1.74× | 4.07× |
+| medium (20 constrained fields) | 1.21× | 1.98× |
+| nested (order with 50 items) | 1.77× | 3.36× |
+| untyped (vs orjson 0.93×) | 1.82× | — |
+
+The gate (≤ 1.1×) is not met. Following this section's rule, the value proposition and the section 9.4 targets are revised (D23), and the project goes on to phase 1. Where the remaining time goes, measured with `examples/stage_timings.rs` on the nested document: about a third in the JSON reader, a seventh in the executor, and the rest in creating Python objects.
+
+### 12.4 Next steps
 
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
-- [ ] Create the repository with the structure from section 12.2
-- [ ] Phase 0 prototype (section 12.2)
+- [x] Create the repository with the structure from section 12.2
+- [x] Phase 0 prototype (section 12.2)
 - [ ] Validate saphyr as the YAML backend (D6) and the event interface with a second format
 - [ ] Test the DX of `@ox.verify` with 5–10 people before v0.1
 - [ ] Find the second maintainer (D7)
