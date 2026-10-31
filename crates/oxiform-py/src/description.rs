@@ -6,9 +6,10 @@ use oxiform_core::description::{
     TypeDescription, UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
-use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyInt, PyString, PyTuple, PyType};
+
+use crate::slots::slot_offset;
 
 /// What a missing field takes.
 pub(crate) enum FieldDefault {
@@ -89,28 +90,12 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
     Ok((struct_description, runtime))
 }
 
-/// Finds the `__slots__` member of `name` along the MRO of `cls`, if there is one.
+/// How to store field `name` on instances of `cls`.
 fn field_setter(cls: &Bound<'_, PyType>, name: &str) -> PyResult<FieldSetter> {
-    let py = cls.py();
-    let member_type = py.import("types")?.getattr("MemberDescriptorType")?;
-    for klass in cls.getattr("__mro__")?.try_iter()? {
-        let Some(descriptor) = klass?.getattr("__dict__")?.get_item(name).ok() else {
-            continue;
-        };
-        if !descriptor.get_type().is(&member_type) {
-            break;
-        }
-        // SAFETY: `descriptor` is a member descriptor, whose C layout is
-        // `PyMemberDescrObject`; it stays alive as long as the class, which the plan keeps.
-        let member =
-            unsafe { &*(*descriptor.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member };
-        let writable = member.flags & ffi::Py_READONLY == 0;
-        if member.type_code == ffi::Py_T_OBJECT_EX && writable && member.offset > 0 {
-            return Ok(FieldSetter::Slot(member.offset));
-        }
-        break;
-    }
-    Ok(FieldSetter::Attribute(PyString::intern(py, name).unbind()))
+    Ok(match slot_offset(cls, name)? {
+        Some(offset) => FieldSetter::Slot(offset),
+        None => FieldSetter::Attribute(PyString::intern(cls.py(), name).unbind()),
+    })
 }
 
 fn read_default(default: &Bound<'_, PyAny>) -> PyResult<FieldDefault> {

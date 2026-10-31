@@ -4,6 +4,7 @@ from typing import NotRequired, TypedDict
 
 __all__ = [
     "DecodeError",
+    "EncodeError",
     "ErrorDetails",
     "OxiformError",
     "SchemaError",
@@ -17,6 +18,15 @@ class OxiformError(Exception):
 
 class SchemaError(OxiformError, TypeError):
     """A type declaration oxiform cannot use, found when its plan is compiled."""
+
+
+class EncodeError(OxiformError):
+    """An object that cannot be written in the requested format."""
+
+    def __init__(self, message: str, pointer: str = "") -> None:
+        super().__init__(message)
+        self.pointer = pointer
+        """Where the object is, as a JSON Pointer from the value passed to ``encode``."""
 
 
 class ErrorDetails(TypedDict):

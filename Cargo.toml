@@ -15,6 +15,9 @@ oxiform-core = { path = "crates/oxiform-core" }
 oxiform-formats = { path = "crates/oxiform-formats" }
 pyo3 = "0.30"
 regex = "1"
+# Shortest round-trip float text and fast integer text, for writers.
+ryu = "1"
+itoa = "1"
 # Field lookup tables: fixed at compile time, so a fast non-keyed hash is safe.
 rustc-hash = "2"
 # Inline storage for the short stacks of every decode (path, open containers, fields).

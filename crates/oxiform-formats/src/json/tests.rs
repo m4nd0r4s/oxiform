@@ -193,3 +193,81 @@ fn finds_specials_at_every_position_of_a_word() {
         );
     }
 }
+
+mod writing {
+    use oxiform_core::writer::EventWriter;
+
+    use super::super::JsonWriter;
+
+    fn sample(writer: &mut JsonWriter) {
+        writer.map_start(3);
+        writer.key("name");
+        writer.string("Rex \"the\" dog\n\u{1}é");
+        writer.key("tags");
+        writer.sequence_start(2);
+        writer.integer(-7);
+        writer.float(0.1).unwrap();
+        writer.sequence_end();
+        writer.key("empty");
+        writer.map_start(0);
+        writer.map_end();
+        writer.map_end();
+    }
+
+    #[test]
+    fn writes_compact_documents() {
+        let mut writer = JsonWriter::new(None);
+        sample(&mut writer);
+        let text = String::from_utf8(writer.into_bytes()).unwrap();
+        assert_eq!(
+            text,
+            r#"{"name":"Rex \"the\" dog\n\u0001é","tags":[-7,0.1],"empty":{}}"#
+        );
+    }
+
+    #[test]
+    fn indents_like_the_standard_library() {
+        let mut writer = JsonWriter::new(Some(2));
+        sample(&mut writer);
+        let text = String::from_utf8(writer.into_bytes()).unwrap();
+        let expected = "{\n  \"name\": \"Rex \\\"the\\\" dog\\n\\u0001é\",\n  \"tags\": [\n    -7,\n    0.1\n  ],\n  \"empty\": {}\n}";
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn refuses_floats_json_cannot_hold() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(JsonWriter::new(None).float(value).is_err());
+        }
+    }
+
+    #[test]
+    fn writes_scalars_at_the_top_level() {
+        for (write, expected) in [
+            (
+                Box::new(|writer: &mut JsonWriter| writer.null()) as Box<dyn Fn(&mut JsonWriter)>,
+                "null",
+            ),
+            (
+                Box::new(|writer: &mut JsonWriter| writer.bool(true)),
+                "true",
+            ),
+            (
+                Box::new(|writer: &mut JsonWriter| {
+                    writer
+                        .big_integer("123456789012345678901234567890")
+                        .unwrap()
+                }),
+                "123456789012345678901234567890",
+            ),
+            (
+                Box::new(|writer: &mut JsonWriter| writer.float(1e300).unwrap()),
+                "1e300",
+            ),
+        ] {
+            let mut writer = JsonWriter::new(None);
+            write(&mut writer);
+            assert_eq!(writer.into_bytes(), expected.as_bytes());
+        }
+    }
+}

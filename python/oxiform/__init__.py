@@ -3,11 +3,18 @@
 from oxiform import json
 from oxiform._oxiform import __version__
 from oxiform.constraints import Ge, Le, Len, OneOf, Pattern
-from oxiform.errors import DecodeError, OxiformError, SchemaError, ValidationError
+from oxiform.errors import (
+    DecodeError,
+    EncodeError,
+    OxiformError,
+    SchemaError,
+    ValidationError,
+)
 from oxiform.model import Model
 
 __all__ = [
     "DecodeError",
+    "EncodeError",
     "Ge",
     "Le",
     "Len",

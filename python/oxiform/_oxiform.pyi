@@ -14,6 +14,13 @@ def json_decode(
 def json_decode(
     data: bytes | bytearray | memoryview | str, type: object, *, max_errors: int = 100
 ) -> Any: ...
+def json_encode(obj: object, *, indent: int | None = None, sort_keys: bool = False) -> bytes: ...
+
+class JsonEncoder:
+    """A reusable JSON encoder with fixed options."""
+
+    def __init__(self, *, indent: int | None = None, sort_keys: bool = False) -> None: ...
+    def encode(self, obj: object) -> bytes: ...
 
 class JsonDecoder(Generic[_T]):
     """A reusable JSON decoder for one type."""
