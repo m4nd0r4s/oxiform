@@ -8,6 +8,10 @@ lookups:
 - ``("list", items, constraints)``, ``("dict", values, constraints)``
 - ``("optional", inner)``
 - ``("struct", index)``, an index into ``Description.structs``
+- ``("union", variants)``, chosen by the kind of value
+- ``("tagged", mode, tag, content, variants)``, chosen by a tag; ``mode`` is ``"internal"``,
+  ``"adjacent"`` (with ``content``) or ``"external"`` (without ``tag``)
+- ``("untagged", variants)``, trying each in order
 """
 
 from collections.abc import Callable
@@ -35,6 +39,14 @@ TypeDescription: TypeAlias = (
     | tuple[Literal["list", "dict"], "TypeDescription", ConstraintValues]
     | tuple[Literal["optional"], "TypeDescription"]
     | tuple[Literal["struct"], int]
+    | tuple[Literal["union", "untagged"], tuple["TypeDescription", ...]]
+    | tuple[
+        Literal["tagged"],
+        Literal["internal", "adjacent", "external"],
+        str | None,
+        str | None,
+        tuple["TypeDescription", ...],
+    ]
 )
 
 Default: TypeAlias = (
@@ -82,6 +94,10 @@ class StructDescription:
     """The keys read, flattened models included, in declaration order."""
     layout: Layout
     unknown_fields: Literal["ignore", "forbid"]
+    tag: str
+    """The value that identifies the structure in a tagged union."""
+    tag_field: str | None
+    """The key that holds the tag, when the model declares one."""
 
 
 @dataclass(frozen=True, slots=True)

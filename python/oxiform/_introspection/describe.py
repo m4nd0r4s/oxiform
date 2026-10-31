@@ -3,10 +3,10 @@
 import dataclasses
 import types
 import typing
-from typing import Annotated, Any, Union
+from typing import Annotated, Any
 
 from oxiform._introspection.constraints import collect_constraints
-from oxiform._introspection.fields import checked_options, default_of, wire_name
+from oxiform._introspection.fields import checked_options, default_of, tag_of, wire_name
 from oxiform._introspection.model import (
     ConstraintValues,
     Description,
@@ -16,8 +16,10 @@ from oxiform._introspection.model import (
     StructDescription,
     TypeDescription,
 )
+from oxiform._introspection.unions import UnionMode, is_union, union_mode, without_none
 from oxiform._model_options import model_options
 from oxiform.errors import SchemaError
+from oxiform.unions import External, Tagged, Untagged
 
 __all__ = ["UnresolvedAnnotationError", "describe"]
 
@@ -49,7 +51,9 @@ class _DescriptionBuilder:
     def type_of(
         self, annotation: object, location: str, outer: ConstraintValues
     ) -> TypeDescription:
-        annotation, constraints = _unwrap_annotated(annotation, location, outer)
+        annotation, constraints, mode = _unwrap_annotated(annotation, location, outer)
+        if mode is not None:
+            return self._marked_union(annotation, mode, location, constraints)
         if annotation is Any:
             return self._without_constraints(("any",), "Any", constraints, location)
         if annotation is bool:
@@ -68,8 +72,8 @@ class _DescriptionBuilder:
             return ("dict", ("any",), constraints)
         origin = typing.get_origin(annotation)
         arguments = typing.get_args(annotation)
-        if origin is Union or origin is types.UnionType:
-            return self._optional(arguments, location, constraints)
+        if is_union(annotation):
+            return self._union(arguments, location, constraints)
         if origin is list:
             (items,) = arguments
             return ("list", self.type_of(items, location, {}), constraints)
@@ -85,13 +89,44 @@ class _DescriptionBuilder:
             )
         raise SchemaError(f"{location}: unsupported type {annotation!r}")
 
-    def _optional(
+    def _union(
         self, arguments: tuple[object, ...], location: str, constraints: ConstraintValues
     ) -> TypeDescription:
-        present = [argument for argument in arguments if argument not in (None, types.NoneType)]
-        if len(present) != 1 or len(present) == len(arguments):
-            raise SchemaError(f"{location}: unions other than T | None are not supported yet")
-        return ("optional", self.type_of(present[0], location, constraints))
+        present = without_none(arguments)
+        if len(present) == 1 and len(arguments) == 2:
+            return ("optional", self.type_of(present[0], location, constraints))
+        if constraints:
+            raise SchemaError(f"{location}: constraints do not apply to a union")
+        return ("union", tuple(self.type_of(argument, location, {}) for argument in arguments))
+
+    def _marked_union(
+        self,
+        annotation: object,
+        mode: UnionMode,
+        location: str,
+        constraints: ConstraintValues,
+    ) -> TypeDescription:
+        """A union with ``ox.Tagged``, ``ox.External`` or ``ox.Untagged``. ``None`` among the
+        variants makes the whole union optional."""
+        name = type(mode).__name__
+        if not is_union(annotation):
+            raise SchemaError(f"{location}: ox.{name} applies to a union, not {annotation!r}")
+        if constraints:
+            raise SchemaError(f"{location}: constraints do not apply to a union")
+        arguments = typing.get_args(annotation)
+        present = without_none(arguments)
+        variants = tuple(self.type_of(argument, location, {}) for argument in present)
+        described: TypeDescription
+        match mode:
+            case Tagged(field, None):
+                described = ("tagged", "internal", field, None, variants)
+            case Tagged(field, content):
+                described = ("tagged", "adjacent", field, content, variants)
+            case External():
+                described = ("tagged", "external", None, None, variants)
+            case Untagged():
+                described = ("untagged", variants)
+        return ("optional", described) if len(present) < len(arguments) else described
 
     def _without_constraints(
         self,
@@ -122,6 +157,8 @@ class _DescriptionBuilder:
             fields=tuple(fields),
             layout=layout,
             unknown_fields=model_options(cls).unknown,
+            tag=tag_of(cls),
+            tag_field=model_options(cls).tag_field,
         )
 
     def _layout(
@@ -180,13 +217,20 @@ def _flattened_class(annotation: object, location: str) -> type:
 
 def _unwrap_annotated(
     annotation: object, location: str, outer: ConstraintValues
-) -> tuple[object, ConstraintValues]:
-    """The annotated type and its constraints, merged with those of enclosing ``Annotated``."""
+) -> tuple[object, ConstraintValues, UnionMode | None]:
+    """The annotated type, its constraints merged with those of enclosing ``Annotated``, and how
+    it is told apart when it is a union."""
     constraints = dict(outer)
+    mode: UnionMode | None = None
     while typing.get_origin(annotation) is Annotated:
         annotation, *metadata = typing.get_args(annotation)
+        found = union_mode(metadata, location)
+        if found is not None:
+            if mode is not None:
+                raise SchemaError(f"{location}: a union is told apart in one way only")
+            mode = found
         for key, value in collect_constraints(metadata, location).items():
             if key in constraints:
                 raise SchemaError(f"{location}: the same constraint is declared twice")
             constraints[key] = value
-    return annotation, constraints
+    return annotation, constraints, mode

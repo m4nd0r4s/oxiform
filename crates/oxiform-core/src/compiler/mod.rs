@@ -2,6 +2,7 @@
 //! here, before any data is read.
 
 mod constraints;
+mod unions;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -88,10 +89,21 @@ impl Compiler<'_> {
                 has_default: field.has_default,
             });
         }
+        let tag = match &description.tag_field {
+            Some(tag_field) if wire_names.contains(tag_field.as_str()) => {
+                return Err(declaration_error(
+                    &description.name,
+                    format!("a field is read from the tag field {tag_field:?}"),
+                ));
+            }
+            Some(tag_field) => Some((tag_field.clone(), description.tag.clone())),
+            None => None,
+        };
         Ok(StructPlan::new(
             description.name.clone(),
             fields,
             description.unknown_fields,
+            tag,
         ))
     }
 
@@ -141,6 +153,11 @@ impl Compiler<'_> {
                     u32::try_from(*index).expect("fewer than 2^32 structures"),
                 ))
             }
+            TypeDescription::Union(variants) => self.compile_union(variants, location)?,
+            TypeDescription::Tagged { mode, variants } => {
+                self.compile_tagged(mode, variants, location)?
+            }
+            TypeDescription::Untagged(variants) => self.compile_untagged(variants, location)?,
         };
         Ok(self.push(node))
     }

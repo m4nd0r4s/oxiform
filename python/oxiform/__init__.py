@@ -12,10 +12,12 @@ from oxiform.errors import (
     SchemaError,
     ValidationError,
 )
+from oxiform.unions import External, Tagged, Untagged
 
 __all__ = [
     "DecodeError",
     "EncodeError",
+    "External",
     "Ge",
     "Le",
     "Len",
@@ -24,6 +26,8 @@ __all__ = [
     "OxiformError",
     "Pattern",
     "SchemaError",
+    "Tagged",
+    "Untagged",
     "ValidationError",
     "__version__",
     "field",

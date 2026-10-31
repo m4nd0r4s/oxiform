@@ -5,7 +5,7 @@ mod node;
 
 use rustc_hash::FxHashMap;
 
-pub use node::{LengthRange, Node, NumberChecks, StringChecks};
+pub use node::{LengthRange, Node, NumberChecks, StringChecks, TaggedPlan, UnionPlan};
 
 use crate::description::UnknownFields;
 
@@ -55,11 +55,18 @@ pub struct StructPlan {
     pub name: String,
     pub fields: Vec<FieldPlan>,
     pub unknown_fields: UnknownFields,
+    /// The key of the tag and the value it must hold, when the structure declares a tag field.
+    pub tag: Option<(String, String)>,
     field_indices: FxHashMap<String, usize>,
 }
 
 impl StructPlan {
-    pub(crate) fn new(name: String, fields: Vec<FieldPlan>, unknown_fields: UnknownFields) -> Self {
+    pub(crate) fn new(
+        name: String,
+        fields: Vec<FieldPlan>,
+        unknown_fields: UnknownFields,
+        tag: Option<(String, String)>,
+    ) -> Self {
         let field_indices = fields
             .iter()
             .enumerate()
@@ -73,6 +80,7 @@ impl StructPlan {
             name,
             fields,
             unknown_fields,
+            tag,
             field_indices,
         }
     }

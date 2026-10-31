@@ -16,6 +16,8 @@ pub enum ErrorCode {
     TooLong,
     Pattern,
     Literal,
+    Union,
+    Tag,
     LimitExceeded,
 }
 
@@ -33,6 +35,8 @@ impl ErrorCode {
             Self::TooLong => "too_long",
             Self::Pattern => "pattern",
             Self::Literal => "literal",
+            Self::Union => "union",
+            Self::Tag => "tag",
             Self::LimitExceeded => "limit_exceeded",
         }
     }
@@ -54,6 +58,8 @@ pub enum ContextValue {
     Text(String),
     Integers(Vec<i64>),
     Texts(Vec<String>),
+    /// The issues of each variant of a union that was tried, by variant name.
+    Variants(Vec<(String, Vec<Issue>)>),
 }
 
 /// One problem found in the input.

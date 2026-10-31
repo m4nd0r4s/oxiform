@@ -3,8 +3,10 @@
 
 mod collections;
 mod numbers;
+mod replay;
 mod scalars;
 mod structs;
+mod unions;
 
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
 use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
@@ -113,6 +115,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 other => self.value(*inner, other),
             },
             Node::Struct(structure) => self.structure(*structure, event),
+            Node::Union(union) => self.union(union, event),
+            Node::Tagged(tagged) => self.tagged(tagged, event),
+            Node::Untagged(variants) => self.untagged(variants, event),
         }
     }
 

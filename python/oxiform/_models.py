@@ -39,6 +39,8 @@ def model(
     hash: bool | None = None,
     rename_all: RenameRule | None = None,
     unknown: UnknownFields | None = None,
+    tag: str | None = None,
+    tag_field: str | None = None,
     skip_if_default: bool | None = None,
     skip_if_none: bool | None = None,
 ) -> Callable[[type[_T]], type[_T]]: ...
@@ -54,17 +56,22 @@ def model(
     hash: bool | None = None,
     rename_all: RenameRule | None = None,
     unknown: UnknownFields | None = None,
+    tag: str | None = None,
+    tag_field: str | None = None,
     skip_if_default: bool | None = None,
     skip_if_none: bool | None = None,
 ) -> type[_T] | Callable[[type[_T]], type[_T]]:
     """Makes a class a model: a dataclass with slots, read and written by oxiform.
 
-    ``rename_all``, ``unknown``, ``skip_if_default`` and ``skip_if_none`` are inherited by
-    subclasses that do not set them.
+    ``rename_all``, ``unknown``, ``tag_field``, ``skip_if_default`` and ``skip_if_none`` are
+    inherited by subclasses that do not set them. ``tag`` belongs to each class: without it, the
+    tag is the class name with ``rename_all``.
     """
 
     def convert(target: type[_T]) -> type[_T]:
-        options = _options(target, rename_all, unknown, skip_if_default, skip_if_none)
+        options = _options(
+            target, rename_all, unknown, tag, tag_field, skip_if_default, skip_if_none
+        )
         made = _dataclass(target, frozen, kw_only, order, eq, hash)
         return _finish(made, options)
 
@@ -98,6 +105,8 @@ class _ModelMeta(type):
         hash: bool | None = None,
         rename_all: RenameRule | None = None,
         unknown: UnknownFields | None = None,
+        tag: str | None = None,
+        tag_field: str | None = None,
         skip_if_default: bool | None = None,
         skip_if_none: bool | None = None,
         **kwargs: Any,
@@ -107,7 +116,7 @@ class _ModelMeta(type):
         if is_base or namespace.get(_CONVERTED):
             return cls
         setattr(cls, _CONVERTED, True)
-        options = _options(cls, rename_all, unknown, skip_if_default, skip_if_none)
+        options = _options(cls, rename_all, unknown, tag, tag_field, skip_if_default, skip_if_none)
         made = _dataclass(cls, frozen, kw_only, order, eq, hash)
         return cast("_ModelMeta", _finish(made, options))
 
@@ -127,6 +136,8 @@ def _options(
     cls: type,
     rename_all: RenameRule | None,
     unknown: UnknownFields | None,
+    tag: str | None,
+    tag_field: str | None,
     skip_if_default: bool | None,
     skip_if_none: bool | None,
 ) -> ModelOptions:
@@ -137,12 +148,17 @@ def _options(
         raise SchemaError(f"{name}: rename_all must be one of {rules}, not {rename_all!r}")
     if unknown is not None and unknown not in ("ignore", "forbid"):
         raise SchemaError(f'{name}: unknown must be "ignore" or "forbid", not {unknown!r}')
+    for option, value in (("tag", tag), ("tag_field", tag_field)):
+        if value is not None and not isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise SchemaError(f"{name}: {option} takes a str, not {value!r}")
     inherited = getattr(cls, OPTIONS_ATTRIBUTE, ModelOptions())
     return ModelOptions(
         rename_all=inherited.rename_all if rename_all is None else rename_all,
         unknown=inherited.unknown if unknown is None else unknown,
         skip_if_default=(inherited.skip_if_default if skip_if_default is None else skip_if_default),
         skip_if_none=inherited.skip_if_none if skip_if_none is None else skip_if_none,
+        tag=tag,
+        tag_field=inherited.tag_field if tag_field is None else tag_field,
     )
 
 

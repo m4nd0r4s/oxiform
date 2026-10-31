@@ -24,6 +24,27 @@ pub enum TypeDescription {
     /// A structure, by its index in [`Description::structs`]. Indices let structures refer to
     /// themselves.
     Struct(usize),
+    /// One of several types, chosen by the kind of value in the input (null, bool, number,
+    /// string, sequence or map). Structures that share a tag field are told apart by it.
+    Union(Vec<TypeDescription>),
+    /// One of several structures, chosen by their tag.
+    Tagged {
+        mode: TagMode,
+        variants: Vec<TypeDescription>,
+    },
+    /// One of several types, trying each in order.
+    Untagged(Vec<TypeDescription>),
+}
+
+/// Where the tag of a tagged union is in the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagMode {
+    /// A key of the structure itself: `{"type": "card", ...}`.
+    Internal { tag: String },
+    /// A key next to another that holds the value: `{"type": "card", "data": {...}}`.
+    Adjacent { tag: String, content: String },
+    /// The only key of a map, holding the value: `{"card": {...}}`.
+    External,
 }
 
 /// Constraints of one value. Which ones apply depends on the type.
@@ -77,6 +98,11 @@ pub struct StructDescription {
     pub name: String,
     pub fields: Vec<FieldDescription>,
     pub unknown_fields: UnknownFields,
+    /// The value that identifies this structure in a tagged union.
+    pub tag: String,
+    /// The key that holds the tag, when the structure declares one: present in the input, it
+    /// must hold `tag`.
+    pub tag_field: Option<String>,
 }
 
 /// One field of a structure.
