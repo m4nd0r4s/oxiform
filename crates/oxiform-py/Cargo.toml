@@ -1,0 +1,20 @@
+[package]
+name = "oxiform-py"
+description = "Python bridge of oxiform: the _oxiform extension module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_oxiform"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oxiform-core.workspace = true
+oxiform-formats.workspace = true
+pyo3.workspace = true
+
+[lints]
+workspace = true
