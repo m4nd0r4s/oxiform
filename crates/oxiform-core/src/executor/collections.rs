@@ -1,5 +1,6 @@
 //! Lists, dicts and untyped values.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use super::numbers::is_integer_text;
@@ -98,22 +99,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the dict"));
             }
             self.check_string_size(&key)?;
-            let value_event = self.next_event()?;
             self.path.push(PathSegment::Key(key.to_string()));
-            if !keys.insert(key.clone()) {
-                let duplicate = self.report(
-                    ErrorCode::DuplicateKey,
-                    "duplicate key".into(),
-                    Some(key.to_string()),
-                    Vec::new(),
-                );
-                self.path.pop();
-                duplicate?;
-                self.skip_value(value_event)?;
-                valid = false;
-                continue;
-            }
-            let value = self.element(values, value_event);
+            let value = self.entry(values, key.clone(), &mut keys);
             self.path.pop();
             match value? {
                 Some(value) if valid => {
@@ -133,6 +120,27 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
             return Ok(None);
         }
         self.emit(|sink| sink.dict(entries))
+    }
+
+    /// Reads the value of `key`, with the path already at the key; a repeated key is an issue.
+    fn entry(
+        &mut self,
+        values: Option<NodeId>,
+        key: Cow<'input, str>,
+        keys: &mut HashSet<Cow<'input, str>>,
+    ) -> Step<S> {
+        let value_event = self.next_event()?;
+        if !keys.insert(key.clone()) {
+            self.report(
+                ErrorCode::DuplicateKey,
+                "duplicate key".into(),
+                Some(key.into_owned()),
+                Vec::new(),
+            )?;
+            self.skip_value(value_event)?;
+            return Ok(None);
+        }
+        self.element(values, value_event)
     }
 
     fn element(&mut self, node: Option<NodeId>, event: Event<'input>) -> Step<S> {

@@ -1,11 +1,17 @@
 //! Structures: named fields read from a map.
 
-use super::{Executor, Step};
+use super::{Executor, Step, Stop};
 use crate::description::UnknownFields;
 use crate::events::{Event, EventReader};
 use crate::issues::{ErrorCode, PathSegment};
-use crate::plan::StructId;
+use crate::plan::{StructId, StructPlan};
 use crate::sink::Sink;
+
+/// The fields read so far.
+struct Slots<V> {
+    values: Vec<Option<V>>,
+    seen: Vec<bool>,
+}
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
     pub(crate) fn structure(&mut self, id: StructId, event: Event<'input>) -> Step<S> {
@@ -14,8 +20,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         if event != Event::MapStart {
             return self.mismatch(&structure.name, event);
         }
-        let mut slots: Vec<Option<S::Value>> = structure.fields.iter().map(|_| None).collect();
-        let mut seen = vec![false; structure.fields.len()];
+        let mut slots = Slots {
+            values: structure.fields.iter().map(|_| None).collect(),
+            seen: vec![false; structure.fields.len()],
+        };
         let mut valid = true;
         let mut keys = 0;
         loop {
@@ -29,46 +37,67 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the map"));
             }
             self.check_string_size(&key)?;
-            let value_event = self.next_event()?;
-            let Some(index) = structure.field_index(&key) else {
-                if structure.unknown_fields == UnknownFields::Forbid {
-                    self.path.push(PathSegment::Key(key.to_string()));
-                    let reported = self.report(
-                        ErrorCode::UnknownField,
-                        "unknown field".into(),
-                        None,
-                        Vec::new(),
-                    );
-                    self.path.pop();
-                    reported?;
-                    valid = false;
-                }
-                self.skip_value(value_event)?;
-                continue;
-            };
             self.path.push(PathSegment::Key(key.to_string()));
-            if seen[index] {
-                let reported = self.report(
-                    ErrorCode::DuplicateKey,
-                    "duplicate key".into(),
-                    Some(key.to_string()),
-                    Vec::new(),
-                );
-                self.path.pop();
-                reported?;
-                self.skip_value(value_event)?;
-                valid = false;
-                continue;
-            }
-            seen[index] = true;
-            let value = self.value(structure.fields[index].value, value_event);
+            let field = self.field(structure, &key, &mut slots);
             self.path.pop();
-            match value? {
-                Some(value) => slots[index] = Some(value),
-                None => valid = false,
-            }
+            valid &= field?;
         }
-        for (field, was_seen) in structure.fields.iter().zip(&seen) {
+        valid &= self.check_missing(structure, &slots.seen)?;
+        if !valid {
+            return Ok(None);
+        }
+        self.emit(|sink| sink.instance(id, slots.values))
+    }
+
+    /// Reads the value of `key`, with the path already at the key. Returns whether it is valid.
+    fn field(
+        &mut self,
+        structure: &StructPlan,
+        key: &str,
+        slots: &mut Slots<S::Value>,
+    ) -> Result<bool, Stop<S::Error>> {
+        let value_event = self.next_event()?;
+        let Some(index) = structure.field_index(key) else {
+            let forbidden = structure.unknown_fields == UnknownFields::Forbid;
+            if forbidden {
+                self.report(
+                    ErrorCode::UnknownField,
+                    "unknown field".into(),
+                    None,
+                    Vec::new(),
+                )?;
+            }
+            self.skip_value(value_event)?;
+            return Ok(!forbidden);
+        };
+        if slots.seen[index] {
+            self.report(
+                ErrorCode::DuplicateKey,
+                "duplicate key".into(),
+                Some(key.into()),
+                Vec::new(),
+            )?;
+            self.skip_value(value_event)?;
+            return Ok(false);
+        }
+        slots.seen[index] = true;
+        match self.value(structure.fields[index].value, value_event)? {
+            Some(value) => {
+                slots.values[index] = Some(value);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Reports required fields that never appeared. Returns whether none is missing.
+    fn check_missing(
+        &mut self,
+        structure: &StructPlan,
+        seen: &[bool],
+    ) -> Result<bool, Stop<S::Error>> {
+        let mut complete = true;
+        for (field, was_seen) in structure.fields.iter().zip(seen) {
             if !was_seen && !field.has_default {
                 self.path.push(PathSegment::Key(field.wire_name.clone()));
                 let reported = self.report(
@@ -79,12 +108,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
                 );
                 self.path.pop();
                 reported?;
-                valid = false;
+                complete = false;
             }
         }
-        if !valid {
-            return Ok(None);
-        }
-        self.emit(|sink| sink.instance(id, slots))
+        Ok(complete)
     }
 }
