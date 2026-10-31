@@ -13,15 +13,18 @@ pub(crate) enum Integer<'text> {
 }
 
 /// Whether the number text has no fraction and no exponent.
+#[inline]
 pub(crate) fn is_integer_text(text: &str) -> bool {
     !text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }
 
 /// Number of digits, without the sign.
+#[inline]
 pub(crate) fn digit_count(text: &str) -> usize {
     text.trim_start_matches('-').len()
 }
 
+#[inline]
 pub(crate) fn parse_integer(text: &str) -> Integer<'_> {
     text.parse().map_or(Integer::Big(text), Integer::Small)
 }

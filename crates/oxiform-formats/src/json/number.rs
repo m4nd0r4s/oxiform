@@ -1,6 +1,7 @@
 //! JSON number grammar. The text is returned as written; the executor decides how to read it.
 
 /// The end of the number that starts at `start`, or the offset of the first invalid byte.
+#[inline]
 pub(crate) fn scan_number(bytes: &[u8], start: usize) -> Result<usize, (usize, &'static str)> {
     let mut position = start;
     if bytes.get(position) == Some(&b'-') {
@@ -36,6 +37,7 @@ pub(crate) fn scan_number(bytes: &[u8], start: usize) -> Result<usize, (usize, &
     Ok(position)
 }
 
+#[inline]
 fn skip_digits(bytes: &[u8], mut position: usize) -> usize {
     while bytes.get(position).is_some_and(u8::is_ascii_digit) {
         position += 1;
