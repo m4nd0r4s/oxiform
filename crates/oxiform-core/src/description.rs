@@ -86,6 +86,8 @@ pub struct FieldDescription {
     pub name: String,
     /// The key in the input.
     pub wire_name: String,
+    /// Other keys the field is also read from.
+    pub aliases: Vec<String>,
     pub value_type: TypeDescription,
     /// Whether a missing key takes a default instead of being an error.
     pub has_default: bool,

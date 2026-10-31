@@ -63,7 +63,11 @@ impl StructPlan {
         let field_indices = fields
             .iter()
             .enumerate()
-            .map(|(index, field)| (field.wire_name.clone(), index))
+            .flat_map(|(index, field)| {
+                std::iter::once(&field.wire_name)
+                    .chain(&field.aliases)
+                    .map(move |key| (key.clone(), index))
+            })
             .collect();
         Self {
             name,
@@ -73,7 +77,7 @@ impl StructPlan {
         }
     }
 
-    /// The index of the field read from `wire_name`.
+    /// The index of the field read from `wire_name`, or from one of its aliases.
     pub fn field_index(&self, wire_name: &str) -> Option<usize> {
         self.field_indices.get(wire_name).copied()
     }
@@ -93,6 +97,7 @@ impl StructPlan {
 pub struct FieldPlan {
     pub name: String,
     pub wire_name: String,
+    pub aliases: Vec<String>,
     pub value: NodeId,
     pub has_default: bool,
 }

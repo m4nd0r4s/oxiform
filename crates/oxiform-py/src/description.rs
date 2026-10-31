@@ -26,13 +26,33 @@ pub(crate) enum FieldSetter {
     Attribute(Py<PyString>),
 }
 
+/// How to create an instance of one class from the fields read.
+pub(crate) struct Layout {
+    pub(crate) cls: Py<PyType>,
+    pub(crate) members: Vec<Member>,
+    pub(crate) has_post_init: bool,
+}
+
+/// One attribute of an instance and where its value comes from.
+pub(crate) struct Member {
+    pub(crate) setter: FieldSetter,
+    pub(crate) source: MemberSource,
+}
+
+pub(crate) enum MemberSource {
+    /// The field at this index of the structure, or its default when the key was missing.
+    Field(usize),
+    /// A field that is not read: always its default.
+    Default(FieldDefault),
+    /// A flattened model, built from fields of the same structure.
+    Flatten(Layout),
+}
+
 /// How to create instances of one structure.
 pub(crate) struct StructRuntime {
-    pub(crate) cls: Py<PyType>,
-    /// In field order.
-    pub(crate) setters: Vec<FieldSetter>,
+    pub(crate) layout: Layout,
+    /// The default of each field read, in field order.
     pub(crate) defaults: Vec<FieldDefault>,
-    pub(crate) has_post_init: bool,
 }
 
 /// Converts a Python `Description`.
@@ -52,20 +72,17 @@ pub(crate) fn read_description(
 
 fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, StructRuntime)> {
     let mut fields = Vec::new();
-    let cls = description.getattr("cls")?.cast_into::<PyType>()?;
-    let mut setters = Vec::new();
     let mut defaults = Vec::new();
     for field in description.getattr("fields")?.try_iter()? {
         let field = field?;
-        let name: String = field.getattr("name")?.extract()?;
         let default = read_default(&field.getattr("default")?)?;
         fields.push(FieldDescription {
+            name: field.getattr("name")?.extract()?,
             wire_name: field.getattr("wire_name")?.extract()?,
+            aliases: field.getattr("aliases")?.extract()?,
             value_type: read_type(&field.getattr("value_type")?)?,
             has_default: !matches!(default, FieldDefault::Required),
-            name: name.clone(),
         });
-        setters.push(field_setter(&cls, &name)?);
         defaults.push(default);
     }
     let unknown_fields = match description
@@ -82,12 +99,40 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
         unknown_fields,
     };
     let runtime = StructRuntime {
-        cls: cls.unbind(),
-        setters,
+        layout: read_layout(&description.getattr("layout")?)?,
         defaults,
-        has_post_init: description.getattr("has_post_init")?.extract()?,
     };
     Ok((struct_description, runtime))
+}
+
+fn read_layout(layout: &Bound<'_, PyAny>) -> PyResult<Layout> {
+    let cls = layout.getattr("cls")?.cast_into::<PyType>()?;
+    let mut members = Vec::new();
+    for member in layout.getattr("members")?.try_iter()? {
+        let member = member?.cast_into::<PyTuple>()?;
+        let kind: String = member.get_item(0)?.extract()?;
+        let name: String = member.get_item(1)?.extract()?;
+        let detail = member.get_item(2)?;
+        let source = match kind.as_str() {
+            "field" => MemberSource::Field(detail.extract()?),
+            "default" => MemberSource::Default(read_default(&detail)?),
+            "flatten" => MemberSource::Flatten(read_layout(&detail)?),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown member kind {other:?}"
+                )));
+            }
+        };
+        members.push(Member {
+            setter: field_setter(&cls, &name)?,
+            source,
+        });
+    }
+    Ok(Layout {
+        has_post_init: layout.getattr("has_post_init")?.extract()?,
+        cls: cls.unbind(),
+        members,
+    })
 }
 
 /// How to store field `name` on instances of `cls`.

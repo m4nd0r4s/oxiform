@@ -6,17 +6,24 @@ import typing
 from typing import Annotated, Any, Union
 
 from oxiform._introspection.constraints import collect_constraints
+from oxiform._introspection.fields import checked_options, default_of, wire_name
 from oxiform._introspection.model import (
     ConstraintValues,
-    Default,
     Description,
     FieldDescription,
+    Layout,
+    Member,
     StructDescription,
     TypeDescription,
 )
+from oxiform._model_options import model_options
 from oxiform.errors import SchemaError
 
-__all__ = ["describe"]
+__all__ = ["UnresolvedAnnotationError", "describe"]
+
+
+class UnresolvedAnnotationError(SchemaError):
+    """An annotation names something not defined yet. Models compile on first use instead."""
 
 
 def describe(target: object) -> Description:
@@ -107,28 +114,68 @@ class _DescriptionBuilder:
         return index
 
     def _struct(self, cls: type) -> StructDescription:
-        name = cls.__qualname__
-        try:
-            hints = typing.get_type_hints(cls, include_extras=True)
-        except NameError as error:
-            raise SchemaError(f"{name}: cannot resolve an annotation: {error}") from error
-        fields = tuple(
-            FieldDescription(
-                name=field.name,
-                wire_name=field.name,
-                value_type=self.type_of(hints[field.name], f"{name}.{field.name}", {}),
-                default=_default_of(field),
-            )
-            for field in dataclasses.fields(cls)
-            if field.init
-        )
+        fields: list[FieldDescription] = []
+        layout = self._layout(cls, fields, ())
         return StructDescription(
-            name=name,
+            name=cls.__qualname__,
             cls=cls,
-            fields=fields,
-            unknown_fields="ignore",
-            has_post_init=hasattr(cls, "__post_init__"),
+            fields=tuple(fields),
+            layout=layout,
+            unknown_fields=model_options(cls).unknown,
         )
+
+    def _layout(
+        self, cls: type, fields: list[FieldDescription], flattening: tuple[type, ...]
+    ) -> Layout:
+        """The layout of ``cls``, adding the fields it reads to ``fields``. ``flattening`` holds
+        the classes whose fields are being read at this level, to catch cycles."""
+        hints = _type_hints(cls)
+        model = model_options(cls)
+        members: list[Member] = []
+        for field in dataclasses.fields(cls):
+            location = f"{cls.__qualname__}.{field.name}"
+            options = checked_options(field, location)
+            default = default_of(field)
+            if not field.init or options.skip_decode:
+                if default is not None:
+                    members.append(("default", field.name, default))
+                continue
+            annotation = hints[field.name]
+            if options.flatten:
+                inner = _flattened_class(annotation, location)
+                if inner is cls or inner in flattening:
+                    raise SchemaError(f"{location}: a model cannot flatten itself")
+                inner_layout = self._layout(inner, fields, (*flattening, cls))
+                members.append(("flatten", field.name, inner_layout))
+                continue
+            outer = collect_constraints(options.constraints, location)
+            fields.append(
+                FieldDescription(
+                    name=field.name,
+                    wire_name=wire_name(field.name, options, model),
+                    aliases=options.aliases,
+                    value_type=self.type_of(annotation, location, outer),
+                    default=default,
+                )
+            )
+            members.append(("field", field.name, len(fields) - 1))
+        return Layout(cls, tuple(members), hasattr(cls, "__post_init__"))
+
+
+def _type_hints(cls: type) -> dict[str, object]:
+    try:
+        return typing.get_type_hints(cls, include_extras=True)
+    except NameError as error:
+        message = f"{cls.__qualname__}: cannot resolve an annotation: {error}"
+        raise UnresolvedAnnotationError(message) from error
+
+
+def _flattened_class(annotation: object, location: str) -> type:
+    if typing.get_origin(annotation) is Annotated:
+        raise SchemaError(f"{location}: a flattened field cannot be constrained")
+    if not isinstance(annotation, type) or not dataclasses.is_dataclass(annotation):
+        raise SchemaError(f"{location}: only a model can be flattened, not {annotation!r}")
+    return annotation
 
 
 def _unwrap_annotated(
@@ -143,11 +190,3 @@ def _unwrap_annotated(
                 raise SchemaError(f"{location}: the same constraint is declared twice")
             constraints[key] = value
     return annotation, constraints
-
-
-def _default_of(field: dataclasses.Field[object]) -> Default:
-    if field.default is not dataclasses.MISSING:
-        return ("value", field.default)
-    if field.default_factory is not dataclasses.MISSING:
-        return ("factory", field.default_factory)
-    return None

@@ -6,7 +6,7 @@ use oxiform_core::compiler::compile;
 use oxiform_core::plan::Plan;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyTuple};
 
 use crate::description::{StructRuntime, read_description};
 use crate::python_objects::{describe, schema_error};
@@ -46,6 +46,16 @@ pub(crate) fn compiled_for(target: &Bound<'_, PyAny>) -> PyResult<Arc<CompiledTy
     )?;
     cache.set_item(target, handle)?;
     Ok(compiled)
+}
+
+/// Compiles the plans of `types` now instead of on first use.
+#[pyfunction]
+#[pyo3(signature = (*types))]
+pub(crate) fn warmup(types: &Bound<'_, PyTuple>) -> PyResult<()> {
+    for target in types.iter() {
+        compiled_for(&target)?;
+    }
+    Ok(())
 }
 
 fn compile_target(target: &Bound<'_, PyAny>) -> PyResult<CompiledType> {

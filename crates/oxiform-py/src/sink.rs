@@ -7,7 +7,7 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use pyo3::{ffi, intern};
 
 use crate::compiled::CompiledType;
-use crate::description::{FieldDefault, FieldSetter};
+use crate::description::{FieldDefault, FieldSetter, Layout, MemberSource};
 
 pub(crate) struct PythonSink<'run, 'py> {
     pub(crate) py: Python<'py>,
@@ -66,30 +66,46 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         structure: StructId,
         fields: &mut [Option<Self::Value>],
     ) -> PyResult<Self::Value> {
-        let py = self.py;
         let runtime = &self.compiled.structs[structure.index()];
-        let cls = runtime.cls.bind(py);
-        // SAFETY: `cls` is a valid type object. Allocating without calling `__new__` or
-        // `__init__` is how the instance gets its fields directly; the result is checked.
-        let instance = unsafe {
-            Bound::from_owned_ptr_or_err(py, ffi::PyType_GenericAlloc(cls.as_type_ptr(), 0))?
+        build(self.py, &runtime.layout, &runtime.defaults, fields)
+    }
+}
+
+/// Creates an instance as `layout` says, taking the values of its fields out of `fields`.
+fn build<'py>(
+    py: Python<'py>,
+    layout: &Layout,
+    defaults: &[FieldDefault],
+    fields: &mut [Option<Bound<'py, PyAny>>],
+) -> PyResult<Bound<'py, PyAny>> {
+    let cls = layout.cls.bind(py);
+    // SAFETY: `cls` is a valid type object. Allocating without calling `__new__` or
+    // `__init__` is how the instance gets its fields directly; the result is checked.
+    let instance = unsafe {
+        Bound::from_owned_ptr_or_err(py, ffi::PyType_GenericAlloc(cls.as_type_ptr(), 0))?
+    };
+    for member in &layout.members {
+        let value = match &member.source {
+            MemberSource::Field(index) => match fields[*index].take() {
+                Some(value) => value,
+                None => default_value(py, &defaults[*index])?,
+            },
+            MemberSource::Default(default) => default_value(py, default)?,
+            MemberSource::Flatten(inner) => build(py, inner, defaults, fields)?,
         };
-        for ((setter, default), value) in runtime.setters.iter().zip(&runtime.defaults).zip(fields)
-        {
-            let value = match (value.take(), default) {
-                (Some(value), _) => value,
-                (None, FieldDefault::Value(value)) => value.bind(py).clone(),
-                (None, FieldDefault::Factory(factory)) => factory.bind(py).call0()?,
-                (None, FieldDefault::Required) => {
-                    unreachable!("the executor reports missing required fields")
-                }
-            };
-            set_field(&instance, setter, value)?;
-        }
-        if runtime.has_post_init {
-            instance.call_method0(intern!(py, "__post_init__"))?;
-        }
-        Ok(instance)
+        set_field(&instance, &member.setter, value)?;
+    }
+    if layout.has_post_init {
+        instance.call_method0(intern!(py, "__post_init__"))?;
+    }
+    Ok(instance)
+}
+
+fn default_value<'py>(py: Python<'py>, default: &FieldDefault) -> PyResult<Bound<'py, PyAny>> {
+    match default {
+        FieldDefault::Value(value) => Ok(value.bind(py).clone()),
+        FieldDefault::Factory(factory) => factory.bind(py).call0(),
+        FieldDefault::Required => unreachable!("the executor reports missing required fields"),
     }
 }
 
