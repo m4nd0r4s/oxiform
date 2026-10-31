@@ -13,6 +13,7 @@ fn card_and_pix(root: impl FnOnce(Vec<TypeDescription>) -> TypeDescription) -> D
     Description {
         root: root(vec![TypeDescription::Struct(0), TypeDescription::Struct(1)]),
         structs: vec![card, pix],
+        choices: Vec::new(),
     }
 }
 

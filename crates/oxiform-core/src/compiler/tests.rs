@@ -25,6 +25,7 @@ fn single_struct(fields: Vec<FieldDescription>) -> Description {
             tag: "User".into(),
             tag_field: None,
         }],
+        choices: Vec::new(),
     }
 }
 
@@ -238,6 +239,7 @@ fn rejects_unknown_structure_indices() {
     let description = Description {
         root: TypeDescription::Struct(3),
         structs: Vec::new(),
+        choices: Vec::new(),
     };
     assert_eq!(
         error_message(&description),

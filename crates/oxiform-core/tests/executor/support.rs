@@ -7,7 +7,7 @@ use oxiform_core::description::{
 use oxiform_core::executor::{Failure, execute};
 use oxiform_core::issues::{Issue, Report};
 use oxiform_core::limits::Limits;
-use oxiform_core::plan::StructId;
+use oxiform_core::plan::{ChoiceId, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_formats::json::JsonReader;
 
@@ -21,6 +21,11 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Dict(Vec<(Value, Value)>),
+    Tuple(Vec<Value>),
+    /// The items, and whether the set is frozen.
+    Set(Vec<Value>, bool),
+    /// A choice index and the index of the value.
+    Choice(usize, u32),
     /// A structure index and its fields; `None` for a field that takes its default.
     Instance(usize, Vec<Option<Value>>),
 }
@@ -52,6 +57,15 @@ impl Sink for ValueSink {
     }
     fn list(&mut self, items: Vec<Value>) -> Result<Value, Infallible> {
         Ok(Value::List(items))
+    }
+    fn tuple(&mut self, items: Vec<Value>) -> Result<Value, Infallible> {
+        Ok(Value::Tuple(items))
+    }
+    fn set(&mut self, items: Vec<Value>, frozen: bool) -> Result<Value, Infallible> {
+        Ok(Value::Set(items, frozen))
+    }
+    fn choice(&mut self, choice: ChoiceId, index: u32) -> Result<Value, Infallible> {
+        Ok(Value::Choice(choice.index(), index))
     }
     fn map_new(&mut self) -> Result<Self::Map, Infallible> {
         Ok(Vec::new())
@@ -88,6 +102,7 @@ pub fn plain(root: TypeDescription) -> Description {
     Description {
         root,
         structs: Vec::new(),
+        choices: Vec::new(),
     }
 }
 

@@ -5,7 +5,7 @@ mod node;
 
 use rustc_hash::FxHashMap;
 
-pub use node::{LengthRange, Node, NumberChecks, StringChecks, TaggedPlan, UnionPlan};
+pub use node::{ChoicePlan, LengthRange, Node, NumberChecks, StringChecks, TaggedPlan, UnionPlan};
 
 use crate::description::UnknownFields;
 
@@ -23,11 +23,22 @@ impl StructId {
     }
 }
 
+/// The index of a set of choices in its plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChoiceId(pub(crate) u32);
+
+impl ChoiceId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A compiled type.
 #[derive(Debug)]
 pub struct Plan {
     pub(crate) nodes: Vec<Node>,
     pub(crate) structs: Vec<StructPlan>,
+    pub(crate) choices: Vec<ChoicePlan>,
     pub(crate) root: NodeId,
 }
 
@@ -46,6 +57,10 @@ impl Plan {
 
     pub fn structs(&self) -> &[StructPlan] {
         &self.structs
+    }
+
+    pub fn choice_plan(&self, id: ChoiceId) -> &ChoicePlan {
+        &self.choices[id.index()]
     }
 }
 

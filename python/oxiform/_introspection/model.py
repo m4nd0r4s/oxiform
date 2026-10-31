@@ -6,6 +6,10 @@ lookups:
 - ``("any",)``, ``("bool",)``, ``("none",)``
 - ``("int", constraints)``, ``("float", constraints)``, ``("str", constraints)``
 - ``("list", items, constraints)``, ``("dict", values, constraints)``
+- ``("collection", kind, items, constraints)``: a ``"tuple"`` of any length, a ``"set"`` or a
+  ``"frozenset"``
+- ``("tuple", items)``, one type per position
+- ``("choice", index)``, an index into ``Description.choices``
 - ``("optional", inner)``
 - ``("struct", index)``, an index into ``Description.structs``
 - ``("union", variants)``, chosen by the kind of value
@@ -19,6 +23,7 @@ from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 __all__ = [
+    "ChoiceDescription",
     "ConstraintValues",
     "Default",
     "Description",
@@ -37,6 +42,14 @@ TypeDescription: TypeAlias = (
     tuple[Literal["any", "bool", "none"]]
     | tuple[Literal["int", "float", "str"], ConstraintValues]
     | tuple[Literal["list", "dict"], "TypeDescription", ConstraintValues]
+    | tuple[
+        Literal["collection"],
+        Literal["tuple", "set", "frozenset"],
+        "TypeDescription",
+        ConstraintValues,
+    ]
+    | tuple[Literal["tuple"], tuple["TypeDescription", ...]]
+    | tuple[Literal["choice"], int]
     | tuple[Literal["optional"], "TypeDescription"]
     | tuple[Literal["struct"], int]
     | tuple[Literal["union", "untagged"], tuple["TypeDescription", ...]]
@@ -101,6 +114,19 @@ class StructDescription:
 
 
 @dataclass(frozen=True, slots=True)
+class ChoiceDescription:
+    """The values a ``Literal`` or ``Enum`` allows."""
+
+    name: str
+    values: tuple[int | str | bool | None, ...]
+    """Each value as it appears in the input."""
+    objects: tuple[object, ...]
+    """The Python object each value becomes: the literal itself or the enum member."""
+    is_enum: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Description:
     root: TypeDescription
     structs: tuple[StructDescription, ...]
+    choices: tuple[ChoiceDescription, ...]

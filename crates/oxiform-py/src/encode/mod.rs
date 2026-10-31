@@ -9,8 +9,13 @@ use std::sync::Arc;
 
 use oxiform_core::issues::PathSegment;
 use oxiform_core::writer::{EventWriter, WriteError};
+use pyo3::exceptions::PyTypeError;
+use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+};
 
 use crate::python_objects::encode_error;
 
@@ -138,6 +143,10 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             self.mapping(dict)?;
         } else if let Some(table) = fields::field_table(&object.get_type())? {
             self.structure(object, table.get())?;
+        } else if object.is_instance_of::<PySet>() || object.is_instance_of::<PyFrozenSet>() {
+            self.set(object)?;
+        } else if object.is_instance(enum_type(object.py())?)? {
+            self.value(&object.getattr(intern!(object.py(), "value"))?)?;
         } else {
             let type_name = object.get_type().qualname()?;
             return Err(EncodeFailure::Unsupported {
@@ -146,6 +155,20 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             });
         }
         Ok(())
+    }
+
+    /// A set or frozenset, sorted when its items can be compared, so the same set is always
+    /// written the same way.
+    fn set(&mut self, set: &Bound<'_, PyAny>) -> Result<(), EncodeFailure> {
+        let py = set.py();
+        let items = match sorted(py)?.call1((set,)) {
+            Ok(items) => items.cast_into::<PyList>().map_err(PyErr::from)?,
+            Err(error) if error.is_instance_of::<PyTypeError>(py) => {
+                PyList::new(py, set.try_iter()?.collect::<PyResult<Vec<_>>>()?)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.sequence(items.len(), items.iter())
     }
 
     fn integer(&mut self, integer: &Bound<'_, PyInt>) -> Result<(), EncodeFailure> {
@@ -296,6 +319,17 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
         self.value(value)
             .map_err(|failure| failure.at(|| PathSegment::Key(key.to_owned())))
     }
+}
+
+static ENUM: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static SORTED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+fn enum_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    ENUM.import(py, "enum", "Enum")
+}
+
+fn sorted(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    SORTED.import(py, "builtins", "sorted")
 }
 
 /// A dict key as text: `str` keys as they are, `int` keys in decimal.

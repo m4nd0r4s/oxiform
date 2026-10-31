@@ -1,9 +1,9 @@
 //! Builds Python objects from validated values.
 
-use oxiform_core::plan::StructId;
+use oxiform_core::plan::{ChoiceId, StructId};
 use oxiform_core::sink::Sink;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple};
 use pyo3::{ffi, intern};
 
 use crate::compiled::CompiledType;
@@ -47,6 +47,23 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         Ok(PyList::new(self.py, items)?.into_any())
     }
 
+    fn tuple(&mut self, items: Vec<Self::Value>) -> PyResult<Self::Value> {
+        Ok(PyTuple::new(self.py, items)?.into_any())
+    }
+
+    fn set(&mut self, items: Vec<Self::Value>, frozen: bool) -> PyResult<Self::Value> {
+        if frozen {
+            Ok(PyFrozenSet::new(self.py, items)?.into_any())
+        } else {
+            Ok(PySet::new(self.py, items)?.into_any())
+        }
+    }
+
+    fn choice(&mut self, choice: ChoiceId, index: u32) -> PyResult<Self::Value> {
+        let objects = &self.compiled.runtime.choices[choice.index()];
+        Ok(objects[index as usize].bind(self.py).clone())
+    }
+
     fn map_new(&mut self) -> PyResult<Self::Map> {
         Ok(PyDict::new(self.py))
     }
@@ -66,7 +83,7 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         structure: StructId,
         fields: &mut [Option<Self::Value>],
     ) -> PyResult<Self::Value> {
-        let runtime = &self.compiled.structs[structure.index()];
+        let runtime = &self.compiled.runtime.structs[structure.index()];
         build(self.py, &runtime.layout, &runtime.defaults, fields)
     }
 }

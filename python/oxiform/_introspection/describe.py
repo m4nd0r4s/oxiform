@@ -1,13 +1,17 @@
 """Builds the description of a type by walking its annotations."""
 
 import dataclasses
+import enum
 import types
 import typing
-from typing import Annotated, Any
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, TypeGuard
 
+from oxiform._introspection.choices import enum_choice, literal_choice
 from oxiform._introspection.constraints import collect_constraints
 from oxiform._introspection.fields import checked_options, default_of, tag_of, wire_name
 from oxiform._introspection.model import (
+    ChoiceDescription,
     ConstraintValues,
     Description,
     FieldDescription,
@@ -35,13 +39,15 @@ def describe(target: object) -> Description:
     """
     builder = _DescriptionBuilder()
     root = builder.type_of(target, "root", {})
-    return Description(root, tuple(builder.finished_structs()))
+    return Description(root, tuple(builder.finished_structs()), tuple(builder.choices))
 
 
 class _DescriptionBuilder:
     def __init__(self) -> None:
         self._structs: list[StructDescription | None] = []
         self._indices: dict[type, int] = {}
+        self.choices: list[ChoiceDescription] = []
+        self._choice_indices: dict[object, int] = {}
 
     def finished_structs(self) -> list[StructDescription]:
         finished = [struct for struct in self._structs if struct is not None]
@@ -68,6 +74,13 @@ class _DescriptionBuilder:
             return ("str", constraints)
         if annotation is list:
             return ("list", ("any",), constraints)
+        if annotation in _BARE_COLLECTIONS:
+            return ("collection", _BARE_COLLECTIONS[annotation], ("any",), constraints)
+        if _is_enum(annotation):
+            index = self._choice_index(annotation, lambda: enum_choice(annotation, location))
+            return self._without_constraints(
+                ("choice", index), annotation.__qualname__, constraints, location
+            )
         if annotation is dict:
             return ("dict", ("any",), constraints)
         origin = typing.get_origin(annotation)
@@ -77,6 +90,19 @@ class _DescriptionBuilder:
         if origin is list:
             (items,) = arguments
             return ("list", self.type_of(items, location, {}), constraints)
+        if origin is Literal:
+            index = self._choice_index(
+                ("literal", arguments), lambda: literal_choice(annotation, location)
+            )
+            return self._without_constraints(("choice", index), "Literal", constraints, location)
+        if origin is tuple:
+            return self._tuple(arguments, location, constraints)
+        if origin is set or origin is frozenset:
+            (items,) = arguments
+            items_type = self.type_of(items, location, {})
+            if not _hashable(items_type):
+                raise SchemaError(f"{location}: set items must be hashable, not {items!r}")
+            return ("collection", _BARE_COLLECTIONS[origin], items_type, constraints)
         if origin is dict:
             keys, values = arguments
             if keys is not str:
@@ -127,6 +153,21 @@ class _DescriptionBuilder:
             case Untagged():
                 described = ("untagged", variants)
         return ("optional", described) if len(present) < len(arguments) else described
+
+    def _tuple(
+        self, arguments: tuple[object, ...], location: str, constraints: ConstraintValues
+    ) -> TypeDescription:
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            return ("collection", "tuple", self.type_of(arguments[0], location, {}), constraints)
+        if constraints:
+            raise SchemaError(f"{location}: constraints do not apply to a fixed tuple")
+        return ("tuple", tuple(self.type_of(item, location, {}) for item in arguments))
+
+    def _choice_index(self, key: object, build: Callable[[], ChoiceDescription]) -> int:
+        if key not in self._choice_indices:
+            self._choice_indices[key] = len(self.choices)
+            self.choices.append(build())
+        return self._choice_indices[key]
 
     def _without_constraints(
         self,
@@ -197,6 +238,28 @@ class _DescriptionBuilder:
             )
             members.append(("field", field.name, len(fields) - 1))
         return Layout(cls, tuple(members), hasattr(cls, "__post_init__"))
+
+
+def _is_enum(annotation: object) -> TypeGuard[type[enum.Enum]]:
+    return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
+
+
+_BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
+    tuple: "tuple",
+    set: "set",
+    frozenset: "frozenset",
+}
+
+
+def _hashable(description: TypeDescription) -> bool:
+    """Whether values read as ``description`` can be set items: lists, dicts and sets cannot."""
+    match description:
+        case ("list" | "dict", *_):
+            return False
+        case ("collection", kind, *_):
+            return kind in ("tuple", "frozenset")
+        case _:
+            return True
 
 
 def _type_hints(cls: type) -> dict[str, object]:

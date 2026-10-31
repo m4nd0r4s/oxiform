@@ -3,7 +3,7 @@
 use rustc_hash::FxHashMap;
 
 use super::{Compiler, DeclarationError, declaration_error};
-use crate::description::{Description, TagMode, TypeDescription};
+use crate::description::{ChoiceValue, Description, TagMode, TypeDescription};
 use crate::plan::{Node, NodeId, StructId, TaggedPlan, UnionPlan};
 
 /// The kinds of value a union tells apart, with the Python name used in messages.
@@ -44,13 +44,16 @@ impl Compiler<'_> {
         let mut maps = Vec::new();
         for variant in variants {
             let name = type_name(variant, self.description);
-            let kind = match variant {
-                TypeDescription::None => Kind::Null,
-                TypeDescription::Bool => Kind::Bool,
-                TypeDescription::Integer(_) => Kind::Integer,
-                TypeDescription::Float(_) => Kind::Float,
-                TypeDescription::String(_) => Kind::String,
-                TypeDescription::List { .. } => Kind::Sequence,
+            let kinds = match variant {
+                TypeDescription::None => vec![Kind::Null],
+                TypeDescription::Bool => vec![Kind::Bool],
+                TypeDescription::Integer(_) => vec![Kind::Integer],
+                TypeDescription::Float(_) => vec![Kind::Float],
+                TypeDescription::String(_) => vec![Kind::String],
+                TypeDescription::List { .. }
+                | TypeDescription::Collection { .. }
+                | TypeDescription::Tuple(_) => vec![Kind::Sequence],
+                TypeDescription::Choice(index) => self.choice_kinds(*index),
                 TypeDescription::Dict { .. }
                 | TypeDescription::Struct(_)
                 | TypeDescription::Tagged { .. } => {
@@ -67,29 +70,56 @@ impl Compiler<'_> {
                     ));
                 }
             };
-            if let Some(previous) = names.insert(kind.input_name(), name.clone()) {
-                return Err(declaration_error(
-                    location,
-                    format!(
-                        "{previous} and {name} are both read from {}; \
-                         tell them apart with ox.Tagged or use ox.Untagged",
-                        kind.input_name()
-                    ),
-                ));
+            for kind in &kinds {
+                if let Some(previous) = names.insert(kind.input_name(), name.clone()) {
+                    return Err(declaration_error(
+                        location,
+                        format!(
+                            "{previous} and {name} are both read from {}; \
+                             tell them apart with ox.Tagged or use ox.Untagged",
+                            kind.input_name()
+                        ),
+                    ));
+                }
             }
             let node = self.compile_type(variant, location)?;
-            let slot = match kind {
-                Kind::Null => &mut plan.null,
-                Kind::Bool => &mut plan.bool,
-                Kind::Integer => &mut plan.integer,
-                Kind::Float => &mut plan.float,
-                Kind::String => &mut plan.string,
-                Kind::Sequence => &mut plan.sequence,
-            };
-            *slot = Some(node);
+            for kind in kinds {
+                let slot = match kind {
+                    Kind::Null => &mut plan.null,
+                    Kind::Bool => &mut plan.bool,
+                    Kind::Integer => &mut plan.integer,
+                    Kind::Float => &mut plan.float,
+                    Kind::String => &mut plan.string,
+                    Kind::Sequence => &mut plan.sequence,
+                };
+                *slot = Some(node);
+            }
         }
         plan.map = self.compile_map_variants(&maps, location)?;
         Ok(Node::Union(Box::new(plan)))
+    }
+
+    /// The kinds of value a `Literal` or `Enum` is read from.
+    fn choice_kinds(&self, index: usize) -> Vec<Kind> {
+        let Some(choice) = self.description.choices.get(index) else {
+            return Vec::new();
+        };
+        let mut kinds = Vec::new();
+        for value in &choice.values {
+            let kind = match value {
+                ChoiceValue::Null => Kind::Null,
+                ChoiceValue::Bool(_) => Kind::Bool,
+                ChoiceValue::Integer(_) => Kind::Integer,
+                ChoiceValue::String(_) => Kind::String,
+            };
+            if !kinds
+                .iter()
+                .any(|known: &Kind| known.input_name() == kind.input_name())
+            {
+                kinds.push(kind);
+            }
+        }
+        kinds
     }
 
     /// The variant read from a map. Several structures that declare the same tag field are
@@ -245,6 +275,12 @@ fn type_name(description: &TypeDescription, whole: &Description) -> String {
         TypeDescription::Float(_) => "float".into(),
         TypeDescription::String(_) => "str".into(),
         TypeDescription::List { .. } => "list".into(),
+        TypeDescription::Collection { kind, .. } => kind.name().into(),
+        TypeDescription::Tuple(_) => "tuple".into(),
+        TypeDescription::Choice(index) => whole
+            .choices
+            .get(*index)
+            .map_or_else(|| format!("choice {index}"), |c| c.name.clone()),
         TypeDescription::Dict { .. } => "dict".into(),
         TypeDescription::Optional(inner) => format!("{} | None", type_name(inner, whole)),
         TypeDescription::Struct(index) => whole

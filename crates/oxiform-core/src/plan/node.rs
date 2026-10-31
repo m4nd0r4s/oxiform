@@ -3,8 +3,8 @@
 use regex::Regex;
 use rustc_hash::FxHashMap;
 
-use super::{NodeId, StructId};
-use crate::description::{Bound, TagMode};
+use super::{ChoiceId, NodeId, StructId};
+use crate::description::{Bound, ChoiceValue, SequenceKind, TagMode};
 
 /// One step of a plan.
 #[derive(Debug)]
@@ -16,9 +16,12 @@ pub enum Node {
     Float(NumberChecks),
     String(StringChecks),
     List {
+        kind: SequenceKind,
         items: NodeId,
         length: LengthRange,
     },
+    Tuple(Vec<NodeId>),
+    Choice(ChoiceId),
     Dict {
         values: NodeId,
         length: LengthRange,
@@ -87,4 +90,20 @@ impl LengthRange {
     pub fn is_unbounded(&self) -> bool {
         self.minimum.is_none() && self.maximum.is_none()
     }
+}
+
+/// The values a `Literal` or `Enum` allows, each mapped to its index, which the sink turns into
+/// the Python object.
+#[derive(Debug, Default)]
+pub struct ChoicePlan {
+    pub name: String,
+    pub is_enum: bool,
+    pub null: Option<u32>,
+    /// Indices for `false` and `true`.
+    pub bools: [Option<u32>; 2],
+    pub integers: FxHashMap<i64, u32>,
+    pub strings: FxHashMap<String, u32>,
+    /// The allowed values in declaration order, and as Python prints them, for messages.
+    pub values: Vec<ChoiceValue>,
+    pub shown: Vec<String>,
 }

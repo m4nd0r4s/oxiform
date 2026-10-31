@@ -2,6 +2,7 @@
 
 use super::numbers::is_integer_text;
 use super::{Executor, Step, Stop};
+use crate::description::SequenceKind;
 use crate::events::{Event, EventReader};
 use crate::issues::{ErrorCode, PathSegment};
 use crate::plan::{LengthRange, NodeId};
@@ -26,7 +27,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 self.check_string_size(&text)?;
                 self.emit(|sink| sink.string(&text))
             }
-            Event::SequenceStart => self.list(None, LengthRange::default(), event),
+            Event::SequenceStart => {
+                self.list(SequenceKind::List, None, LengthRange::default(), event)
+            }
             Event::MapStart => self.dict(None, LengthRange::default(), event),
             Event::Key(_) | Event::MapEnd | Event::SequenceEnd | Event::End => {
                 unreachable!("readers only start values with value events")
@@ -34,15 +37,17 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
     }
 
-    /// A list whose items are read as `items`, or as any type when `None`.
+    /// A list, a tuple of any length or a set whose items are read as `items`, or as any type
+    /// when `None`.
     pub(crate) fn list(
         &mut self,
+        kind: SequenceKind,
         items: Option<NodeId>,
         length: LengthRange,
         event: Event<'input>,
     ) -> Step<S> {
         if event != Event::SequenceStart {
-            return self.mismatch("list", event);
+            return self.mismatch(kind.name(), event);
         }
         let mut values = Vec::new();
         let mut valid = true;
@@ -71,7 +76,51 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         if !valid {
             return Ok(None);
         }
-        self.emit(|sink| sink.list(values))
+        self.emit(|sink| match kind {
+            SequenceKind::List => sink.list(values),
+            SequenceKind::Tuple => sink.tuple(values),
+            SequenceKind::Set => sink.set(values, false),
+            SequenceKind::FrozenSet => sink.set(values, true),
+        })
+    }
+
+    /// A tuple with one type per position.
+    pub(crate) fn tuple(&mut self, items: &[NodeId], event: Event<'input>) -> Step<S> {
+        if event != Event::SequenceStart {
+            return self.mismatch("tuple", event);
+        }
+        let mut values = Vec::with_capacity(items.len());
+        let mut valid = true;
+        let mut index = 0;
+        loop {
+            let event = self.next_event()?;
+            if event == Event::SequenceEnd {
+                break;
+            }
+            let Some(&node) = items.get(index) else {
+                self.skip_value(event)?;
+                index += 1;
+                continue;
+            };
+            let mark = self.issues.len();
+            let item = self.value(node, event);
+            self.prefix_issues(mark, || PathSegment::Index(index));
+            match item? {
+                Some(item) if valid => values.push(item),
+                Some(_) => {}
+                None => valid = false,
+            }
+            index += 1;
+        }
+        let exact = LengthRange {
+            minimum: Some(items.len()),
+            maximum: Some(items.len()),
+        };
+        valid &= self.check_length(exact, index, || None)?;
+        if !valid {
+            return Ok(None);
+        }
+        self.emit(|sink| sink.tuple(values))
     }
 
     /// A dict with string keys whose values are read as `values`, or as any type when `None`.
