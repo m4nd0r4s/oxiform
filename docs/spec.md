@@ -31,7 +31,7 @@ D1–D13 close the 7 open questions from the review and 6 defaults that were imp
 | D19 | Paths in errors | Wire names (what the client sent), as a list and as a JSON Pointer | The error describes the input; JSON Pointer is what RFC 9457 and forms use |
 | D20 | MessagePack | Only the official timestamp extension; `Decimal` as string; `int` outside 64 bits is an error | Interoperable with any msgpack lib; no value silently loses precision |
 | D21 | Wheels | One wheel per Python version (no abi3) | The performance target needs the full C-API, and abi3 does not exist in free-threaded |
-| D22 | Format readers | Own event interface (numbers as raw text, positions). The JSON reader (sonic-rs or own) is decided in phase 0 | Serde does not preserve the text of numbers nor detect duplicate keys. The interface is the stable contract; the backend is replaceable |
+| D22 | Format readers | Own event interface (numbers as raw text, positions) and an own pull reader for JSON, chosen over sonic-rs in phase 0 | Serde does not preserve the text of numbers nor detect duplicate keys, and sonic-rs offers no pull interface: going through its DOM adds a tree that the single pass avoids. The interface is the stable contract; the backend is replaceable |
 
 ## 2. Scope
 
@@ -386,7 +386,7 @@ All formats have the same API and share the same internal data model. Attributes
 
 | Module | Rust backend | Notes |
 | --- | --- | --- |
-| `ox.json` | sonic-rs or own reader (phase 0 decision, D22) | JSON Lines, `indent`, `sort_keys` |
+| `ox.json` | own pull reader (D22) | JSON Lines, `indent`, `sort_keys` |
 | `ox.yaml` | saphyr | YAML 1.2, multi-document, safe tags only |
 | `ox.toml` | toml | TOML 1.0 |
 | `ox.msgpack` | rmp | Official timestamp (ext −1) for `datetime` (D20) |
@@ -1006,7 +1006,7 @@ oxiform/
 - [ ] 5 constraints: `Ge`, `Le`, `Len`, `Pattern`, `OneOf`
 - [ ] Errors with `code`, `path` and `pointer` (section 4.7), collecting several
 - [ ] Executor in `oxiform-core` with no Python dependency, with the event interface that the other formats will use
-- [ ] JSON reader chosen (D22): sonic-rs vs own reader, measured on the same benchmark
+- [x] JSON reader chosen (D22): own reader, measured against sonic-rs on the same document
 - [ ] Benchmark published against msgspec, pydantic v2 and orjson, with 3 models (small, medium with 20 fields, nested)
 - [ ] Gate G1 decision written and published
 
