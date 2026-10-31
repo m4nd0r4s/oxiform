@@ -1,4 +1,4 @@
-from typing import Any, TypeVar, overload
+from typing import Any, Generic, TypeVar, overload
 
 _T = TypeVar("_T")
 
@@ -14,5 +14,16 @@ def json_decode(
 def json_decode(
     data: bytes | bytearray | memoryview | str, type: object, *, max_errors: int = 100
 ) -> Any: ...
+
+class JsonDecoder(Generic[_T]):
+    """A reusable JSON decoder for one type."""
+
+    @overload
+    def __new__(cls, type: type[_T], *, max_errors: int = 100) -> JsonDecoder[_T]: ...
+    @overload
+    def __new__(cls, type: object = ..., *, max_errors: int = 100) -> JsonDecoder[Any]: ...
+    @property
+    def type(self) -> object: ...
+    def decode(self, data: bytes | bytearray | memoryview | str) -> _T: ...
 
 class PlanHandle: ...

@@ -1,6 +1,7 @@
-//! `ox.json.decode`.
+//! `ox.json.decode` and `ox.json.Decoder`.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use oxiform_core::executor::{Failure, execute};
 use oxiform_core::issues::{ContextValue, ErrorCode, Issue, Report, ReportKind};
@@ -10,7 +11,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyString};
 
-use crate::compiled::compiled_for;
+use crate::compiled::{CompiledType, compiled_for};
 use crate::errors::report_error;
 use crate::python_objects::any_type;
 use crate::sink::PythonSink;
@@ -23,16 +24,68 @@ pub(crate) fn json_decode<'py>(
     r#type: Option<&Bound<'py, PyAny>>,
     max_errors: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let py = data.py();
     let target = match r#type {
         Some(target) => target.clone(),
-        None => any_type(py)?.clone(),
+        None => any_type(data.py())?.clone(),
     };
     let compiled = compiled_for(&target)?;
     let limits = Limits {
         max_errors,
         ..Limits::default()
     };
+    decode_with(data, &target, &compiled, &limits)
+}
+
+/// A reusable JSON decoder for one type: `ox.json.Decoder(User).decode(data)`.
+#[pyclass(frozen, name = "JsonDecoder", module = "oxiform._oxiform")]
+pub(crate) struct JsonDecoder {
+    target: Py<PyAny>,
+    compiled: Arc<CompiledType>,
+    limits: Limits,
+}
+
+#[pymethods]
+impl JsonDecoder {
+    #[new]
+    #[pyo3(signature = (r#type = None, *, max_errors = 100))]
+    fn new(py: Python<'_>, r#type: Option<&Bound<'_, PyAny>>, max_errors: usize) -> PyResult<Self> {
+        let target = match r#type {
+            Some(target) => target.clone(),
+            None => any_type(py)?.clone(),
+        };
+        let compiled = compiled_for(&target)?;
+        Ok(Self {
+            target: target.unbind(),
+            compiled,
+            limits: Limits {
+                max_errors,
+                ..Limits::default()
+            },
+        })
+    }
+
+    fn decode<'py>(&self, data: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        decode_with(
+            data,
+            self.target.bind(data.py()),
+            &self.compiled,
+            &self.limits,
+        )
+    }
+
+    #[getter(r#type)]
+    fn target<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.target.bind(py).clone()
+    }
+}
+
+fn decode_with<'py>(
+    data: &Bound<'py, PyAny>,
+    target: &Bound<'py, PyAny>,
+    compiled: &CompiledType,
+    limits: &Limits,
+) -> PyResult<Bound<'py, PyAny>> {
+    let py = data.py();
     let input = read_input(data)?;
     if input.len() > limits.max_bytes {
         let issue = Issue {
@@ -45,7 +98,7 @@ pub(crate) fn json_decode<'py>(
             input: None,
             context: vec![("limit", ContextValue::Text("max_bytes".into()))],
         };
-        return Err(report_error(py, &decode_report(issue), &target, "json"));
+        return Err(report_error(py, &decode_report(issue), target, "json"));
     }
     let text = match std::str::from_utf8(&input) {
         Ok(text) => text,
@@ -53,19 +106,16 @@ pub(crate) fn json_decode<'py>(
             return Err(report_error(
                 py,
                 &decode_report(invalid_utf8(&input, error)),
-                &target,
+                target,
                 "json",
             ));
         }
     };
     let mut reader = JsonReader::new(text, limits.max_depth);
-    let mut sink = PythonSink {
-        py,
-        compiled: &compiled,
-    };
-    match execute(&compiled.plan, &mut reader, &mut sink, &limits) {
+    let mut sink = PythonSink { py, compiled };
+    match execute(&compiled.plan, &mut reader, &mut sink, limits) {
         Ok(value) => Ok(value),
-        Err(Failure::Invalid(report)) => Err(report_error(py, &report, &target, "json")),
+        Err(Failure::Invalid(report)) => Err(report_error(py, &report, target, "json")),
         Err(Failure::Sink(error)) => Err(error),
     }
 }

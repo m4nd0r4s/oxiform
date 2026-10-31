@@ -171,3 +171,13 @@ def test_decodes_from_many_threads() -> None:
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         assert sum(pool.map(decode_many, range(8))) == 8 * 200
+
+
+def test_reusable_decoders() -> None:
+    decoder = ox.json.Decoder(list[int], max_errors=1)
+    assert decoder.type == list[int]
+    assert decoder.decode(b"[1, 2]") == [1, 2]
+    with pytest.raises(ox.ValidationError) as raised:
+        decoder.decode(b'["a", "b"]')
+    assert len(raised.value.errors()) == 1
+    assert ox.json.Decoder().decode(b'{"a": 1}') == {"a": 1}
