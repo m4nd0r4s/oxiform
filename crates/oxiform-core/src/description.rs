@@ -14,6 +14,17 @@ pub enum TypeDescription {
         items: Box<TypeDescription>,
         constraints: Constraints,
     },
+    /// A tuple of any length, a set or a frozenset: a sequence in the input.
+    Collection {
+        kind: SequenceKind,
+        items: Box<TypeDescription>,
+        constraints: Constraints,
+    },
+    /// A tuple with one type per position.
+    Tuple(Vec<TypeDescription>),
+    /// One of a fixed set of values (`Literal`, `Enum`), by its index in
+    /// [`Description::choices`].
+    Choice(usize),
     /// A map with string keys.
     Dict {
         values: Box<TypeDescription>,
@@ -34,6 +45,47 @@ pub enum TypeDescription {
     },
     /// One of several types, trying each in order.
     Untagged(Vec<TypeDescription>),
+}
+
+/// What a sequence in the input becomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SequenceKind {
+    #[default]
+    List,
+    Tuple,
+    Set,
+    FrozenSet,
+}
+
+impl SequenceKind {
+    /// The Python name, for messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Tuple => "tuple",
+            Self::Set => "set",
+            Self::FrozenSet => "frozenset",
+        }
+    }
+}
+
+/// A value allowed by a `Literal` or an `Enum`, as it appears in the input.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChoiceValue {
+    Null,
+    Bool(bool),
+    Integer(i64),
+    String(String),
+}
+
+/// A fixed set of allowed values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChoiceDescription {
+    /// The type as written in Python, for messages: `Color` or `Literal['a', 'b']`.
+    pub name: String,
+    pub values: Vec<ChoiceValue>,
+    /// An `Enum`, whose failures are `enum` errors instead of `literal`.
+    pub is_enum: bool,
 }
 
 /// Where the tag of a tagged union is in the input.
@@ -124,4 +176,5 @@ pub struct FieldDescription {
 pub struct Description {
     pub root: TypeDescription,
     pub structs: Vec<StructDescription>,
+    pub choices: Vec<ChoiceDescription>,
 }

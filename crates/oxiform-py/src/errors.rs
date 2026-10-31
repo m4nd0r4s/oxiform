@@ -1,5 +1,6 @@
 //! Turns a report into `ox.ValidationError` or `ox.DecodeError`.
 
+use oxiform_core::description::ChoiceValue;
 use oxiform_core::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -58,6 +59,18 @@ fn issue_dict<'py>(py: Python<'py>, issue: &Issue, format: &str) -> PyResult<Bou
             ContextValue::Text(value) => context.set_item(key, value)?,
             ContextValue::Integers(values) => context.set_item(key, values)?,
             ContextValue::Texts(values) => context.set_item(key, values)?,
+            ContextValue::Values(values) => {
+                let list = PyList::empty(py);
+                for value in values {
+                    match value {
+                        ChoiceValue::Null => list.append(py.None())?,
+                        ChoiceValue::Bool(flag) => list.append(flag)?,
+                        ChoiceValue::Integer(number) => list.append(number)?,
+                        ChoiceValue::String(text) => list.append(text)?,
+                    }
+                }
+                context.set_item(key, list)?;
+            }
             ContextValue::Variants(variants) => {
                 let by_variant = PyDict::new(py);
                 for (name, issues) in variants {

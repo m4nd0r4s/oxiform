@@ -1,14 +1,15 @@
 //! Checks a description and compiles it into a plan. Every mistake in a declaration is caught
 //! here, before any data is read.
 
+mod choices;
 mod constraints;
 mod unions;
 
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::description::{Description, StructDescription, TypeDescription};
-use crate::plan::{FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
+use crate::description::{Description, SequenceKind, StructDescription, TypeDescription};
+use crate::plan::{ChoiceId, FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
 
 /// A declaration that cannot be compiled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,10 +45,16 @@ pub fn compile(description: &Description) -> Result<Plan, DeclarationError> {
         .iter()
         .map(|struct_description| compiler.compile_struct(struct_description))
         .collect::<Result<Vec<_>, _>>()?;
+    let choices = description
+        .choices
+        .iter()
+        .map(choices::compile_choice)
+        .collect::<Result<Vec<_>, _>>()?;
     let root = compiler.compile_type(&description.root, "root")?;
     Ok(Plan {
         nodes: compiler.nodes,
         structs,
+        choices,
         root,
     })
 }
@@ -131,7 +138,41 @@ impl Compiler<'_> {
             } => {
                 let length = constraints::length_only(declared, "list", location)?;
                 let items = self.compile_type(items, location)?;
-                Node::List { items, length }
+                Node::List {
+                    kind: SequenceKind::List,
+                    items,
+                    length,
+                }
+            }
+            TypeDescription::Collection {
+                kind,
+                items,
+                constraints: declared,
+            } => {
+                let length = constraints::length_only(declared, kind.name(), location)?;
+                let items = self.compile_type(items, location)?;
+                Node::List {
+                    kind: *kind,
+                    items,
+                    length,
+                }
+            }
+            TypeDescription::Tuple(items) => Node::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.compile_type(item, location))
+                    .collect::<Result<_, _>>()?,
+            ),
+            TypeDescription::Choice(index) => {
+                if *index >= self.description.choices.len() {
+                    return Err(declaration_error(
+                        location,
+                        format!("unknown choice index {index}"),
+                    ));
+                }
+                Node::Choice(ChoiceId(
+                    u32::try_from(*index).expect("fewer than 2^32 choices"),
+                ))
             }
             TypeDescription::Dict {
                 values,

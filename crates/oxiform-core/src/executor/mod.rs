@@ -1,6 +1,7 @@
 //! Runs a plan against reader events in a single pass, building the output through a sink and
 //! collecting every issue on the way.
 
+mod choices;
 mod collections;
 mod numbers;
 mod replay;
@@ -108,7 +109,13 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             Node::Integer(checks) => self.integer(checks, event),
             Node::Float(checks) => self.float(checks, event),
             Node::String(checks) => self.string(checks, event),
-            Node::List { items, length } => self.list(Some(*items), *length, event),
+            Node::List {
+                kind,
+                items,
+                length,
+            } => self.list(*kind, Some(*items), *length, event),
+            Node::Tuple(items) => self.tuple(items, event),
+            Node::Choice(choice) => self.choice(*choice, event),
             Node::Dict { values, length } => self.dict(Some(*values), *length, event),
             Node::Optional(inner) => match event {
                 Event::Null => self.emit(Sink::none),

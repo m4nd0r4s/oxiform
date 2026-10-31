@@ -2,12 +2,13 @@
 //! what the sink needs to create instances.
 
 use oxiform_core::description::{
-    Bound as NumericBound, Constraints, Description, FieldDescription, Literal, StructDescription,
-    TagMode, TypeDescription, UnknownFields,
+    Bound as NumericBound, ChoiceDescription, ChoiceValue, Constraints, Description,
+    FieldDescription, Literal, SequenceKind, StructDescription, TagMode, TypeDescription,
+    UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyInt, PyString, PyTuple, PyType};
+use pyo3::types::{PyBool, PyDict, PyInt, PyString, PyTuple, PyType};
 
 use crate::slots::slot_offset;
 
@@ -55,19 +56,61 @@ pub(crate) struct StructRuntime {
     pub(crate) defaults: Vec<FieldDefault>,
 }
 
+/// What the sink needs besides the plan: how to create instances of each structure, and the
+/// Python object of each value of each set of choices.
+pub(crate) struct Runtime {
+    pub(crate) structs: Vec<StructRuntime>,
+    pub(crate) choices: Vec<Vec<Py<PyAny>>>,
+}
+
 /// Converts a Python `Description`.
-pub(crate) fn read_description(
-    description: &Bound<'_, PyAny>,
-) -> PyResult<(Description, Vec<StructRuntime>)> {
+pub(crate) fn read_description(description: &Bound<'_, PyAny>) -> PyResult<(Description, Runtime)> {
     let root = read_type(&description.getattr("root")?)?;
     let mut structs = Vec::new();
-    let mut runtimes = Vec::new();
+    let mut runtime = Runtime {
+        structs: Vec::new(),
+        choices: Vec::new(),
+    };
     for struct_description in description.getattr("structs")?.try_iter()? {
-        let (struct_description, runtime) = read_struct(&struct_description?)?;
+        let (struct_description, struct_runtime) = read_struct(&struct_description?)?;
         structs.push(struct_description);
-        runtimes.push(runtime);
+        runtime.structs.push(struct_runtime);
     }
-    Ok((Description { root, structs }, runtimes))
+    let mut choices = Vec::new();
+    for choice in description.getattr("choices")?.try_iter()? {
+        let choice = choice?;
+        let values = choice
+            .getattr("values")?
+            .try_iter()?
+            .map(|value| read_choice_value(&value?))
+            .collect::<PyResult<Vec<_>>>()?;
+        choices.push(ChoiceDescription {
+            name: choice.getattr("name")?.extract()?,
+            values,
+            is_enum: choice.getattr("is_enum")?.extract()?,
+        });
+        runtime.choices.push(choice.getattr("objects")?.extract()?);
+    }
+    Ok((
+        Description {
+            root,
+            structs,
+            choices,
+        },
+        runtime,
+    ))
+}
+
+fn read_choice_value(value: &Bound<'_, PyAny>) -> PyResult<ChoiceValue> {
+    Ok(if value.is_none() {
+        ChoiceValue::Null
+    } else if value.is_instance_of::<PyBool>() {
+        ChoiceValue::Bool(value.extract()?)
+    } else if value.is_instance_of::<PyInt>() {
+        ChoiceValue::Integer(value.extract()?)
+    } else {
+        ChoiceValue::String(value.extract()?)
+    })
 }
 
 fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, StructRuntime)> {
@@ -171,6 +214,17 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<TypeDescription> {
             items: Box::new(read_type(&parts.get_item(1)?)?),
             constraints: read_constraints(&parts.get_item(2)?)?,
         },
+        "collection" => TypeDescription::Collection {
+            kind: match parts.get_item(1)?.extract::<String>()?.as_str() {
+                "set" => SequenceKind::Set,
+                "frozenset" => SequenceKind::FrozenSet,
+                _ => SequenceKind::Tuple,
+            },
+            items: Box::new(read_type(&parts.get_item(2)?)?),
+            constraints: read_constraints(&parts.get_item(3)?)?,
+        },
+        "tuple" => TypeDescription::Tuple(read_types(&parts.get_item(1)?)?),
+        "choice" => TypeDescription::Choice(parts.get_item(1)?.extract()?),
         "dict" => TypeDescription::Dict {
             values: Box::new(read_type(&parts.get_item(1)?)?),
             constraints: read_constraints(&parts.get_item(2)?)?,

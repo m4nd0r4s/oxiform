@@ -2,6 +2,8 @@
 
 use std::fmt::Write;
 
+use crate::description::ChoiceValue;
+
 /// The stable code of an issue. Codes are public API; messages are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -16,6 +18,7 @@ pub enum ErrorCode {
     TooLong,
     Pattern,
     Literal,
+    Enum,
     Union,
     Tag,
     LimitExceeded,
@@ -35,6 +38,7 @@ impl ErrorCode {
             Self::TooLong => "too_long",
             Self::Pattern => "pattern",
             Self::Literal => "literal",
+            Self::Enum => "enum",
             Self::Union => "union",
             Self::Tag => "tag",
             Self::LimitExceeded => "limit_exceeded",
@@ -58,6 +62,8 @@ pub enum ContextValue {
     Text(String),
     Integers(Vec<i64>),
     Texts(Vec<String>),
+    /// Values of mixed types, for the values a `Literal` allows.
+    Values(Vec<ChoiceValue>),
     /// The issues of each variant of a union that was tried, by variant name.
     Variants(Vec<(String, Vec<Issue>)>),
 }

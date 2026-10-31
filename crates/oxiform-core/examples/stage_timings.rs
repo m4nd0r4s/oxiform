@@ -9,7 +9,7 @@ use oxiform_core::description::{Description, TypeDescription};
 use oxiform_core::events::{Event, EventReader};
 use oxiform_core::executor::execute;
 use oxiform_core::limits::Limits;
-use oxiform_core::plan::{Plan, StructId};
+use oxiform_core::plan::{ChoiceId, Plan, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_formats::json::JsonReader;
 
@@ -40,6 +40,15 @@ impl Sink for NullSink {
         Ok(())
     }
     fn list(&mut self, _: Vec<()>) -> Result<(), ()> {
+        Ok(())
+    }
+    fn tuple(&mut self, _: Vec<()>) -> Result<(), ()> {
+        Ok(())
+    }
+    fn set(&mut self, _: Vec<()>, _: bool) -> Result<(), ()> {
+        Ok(())
+    }
+    fn choice(&mut self, _: ChoiceId, _: u32) -> Result<(), ()> {
         Ok(())
     }
     fn map_new(&mut self) -> Result<(), ()> {
@@ -84,6 +93,7 @@ fn main() {
     let plan = compile(&Description {
         root: TypeDescription::Any,
         structs: Vec::new(),
+        choices: Vec::new(),
     })
     .expect("Any compiles");
     let iterations = 200_000;

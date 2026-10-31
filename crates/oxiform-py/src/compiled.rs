@@ -8,13 +8,13 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple};
 
-use crate::description::{StructRuntime, read_description};
+use crate::description::{Runtime, read_description};
 use crate::python_objects::{describe, schema_error};
 
 /// A plan and what the sink needs for its structures.
 pub(crate) struct CompiledType {
     pub(crate) plan: Plan,
-    pub(crate) structs: Vec<StructRuntime>,
+    pub(crate) runtime: Runtime,
 }
 
 /// Holds a compiled type in the cache dict.
@@ -61,9 +61,9 @@ pub(crate) fn warmup(types: &Bound<'_, PyTuple>) -> PyResult<()> {
 fn compile_target(target: &Bound<'_, PyAny>) -> PyResult<CompiledType> {
     let py = target.py();
     let description = describe(py)?.call1((target,))?;
-    let (description, structs) = read_description(&description)?;
+    let (description, runtime) = read_description(&description)?;
     match compile(&description) {
-        Ok(plan) => Ok(CompiledType { plan, structs }),
+        Ok(plan) => Ok(CompiledType { plan, runtime }),
         Err(error) => Err(PyErr::from_type(
             schema_error(py)?.clone(),
             error.to_string(),
