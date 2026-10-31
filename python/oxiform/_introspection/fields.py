@@ -5,11 +5,11 @@ from typing import Any
 
 from oxiform._fields import FieldOptions, options_of
 from oxiform._introspection.model import Default
-from oxiform._model_options import ModelOptions
+from oxiform._model_options import OPTIONS_ATTRIBUTE, ModelOptions, model_options
 from oxiform._naming import rename
 from oxiform.errors import SchemaError
 
-__all__ = ["checked_options", "default_of", "wire_name"]
+__all__ = ["checked_options", "default_of", "tag_of", "wire_name"]
 
 
 def checked_options(field: dataclasses.Field[Any], location: str) -> FieldOptions:
@@ -50,3 +50,13 @@ def default_of(field: dataclasses.Field[Any]) -> Default:
     if field.default_factory is not dataclasses.MISSING:
         return ("factory", field.default_factory)
     return None
+
+
+def tag_of(cls: type) -> str:
+    """The tag of ``cls`` in a tagged union: its own ``tag``, or the class name written with
+    the model's ``rename_all``. A tag is never inherited."""
+    own = cls.__dict__.get(OPTIONS_ATTRIBUTE)
+    if isinstance(own, ModelOptions) and own.tag is not None:
+        return own.tag
+    rule = model_options(cls).rename_all
+    return rename(cls.__name__, rule) if rule is not None else cls.__name__

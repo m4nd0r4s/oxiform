@@ -106,6 +106,8 @@ pub fn structure(name: &str, fields: Vec<FieldDescription>) -> StructDescription
         name: name.into(),
         fields,
         unknown_fields: UnknownFields::Ignore,
+        tag: name.into(),
+        tag_field: None,
     }
 }
 

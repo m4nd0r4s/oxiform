@@ -58,6 +58,17 @@ fn issue_dict<'py>(py: Python<'py>, issue: &Issue, format: &str) -> PyResult<Bou
             ContextValue::Text(value) => context.set_item(key, value)?,
             ContextValue::Integers(values) => context.set_item(key, values)?,
             ContextValue::Texts(values) => context.set_item(key, values)?,
+            ContextValue::Variants(variants) => {
+                let by_variant = PyDict::new(py);
+                for (name, issues) in variants {
+                    let errors = PyList::empty(py);
+                    for issue in issues {
+                        errors.append(issue_dict(py, issue, format)?)?;
+                    }
+                    by_variant.set_item(name, errors)?;
+                }
+                context.set_item(key, by_variant)?;
+            }
         }
     }
     if issue.code == ErrorCode::Syntax {

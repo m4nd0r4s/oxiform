@@ -5,7 +5,7 @@ use smallvec::{SmallVec, smallvec};
 use super::{Executor, Step, Stop};
 use crate::description::UnknownFields;
 use crate::events::{Event, EventReader};
-use crate::issues::{ErrorCode, PathSegment};
+use crate::issues::{ContextValue, ErrorCode, PathSegment};
 use crate::plan::{StructId, StructPlan};
 use crate::sink::Sink;
 
@@ -24,6 +24,13 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         if event != Event::MapStart {
             return self.mismatch(&structure.name, event);
         }
+        self.structure_entries(id)
+    }
+
+    /// Reads the entries of a structure whose map start was already read, up to its end.
+    pub(crate) fn structure_entries(&mut self, id: StructId) -> Step<S> {
+        let plan = self.plan;
+        let structure = plan.struct_plan(id);
         let mut slots = Slots {
             values: structure.fields.iter().map(|_| None).collect(),
             seen: smallvec![false; structure.fields.len()],
@@ -42,6 +49,16 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the map"));
             }
             self.check_string_size(&key)?;
+            if let Some((tag_field, tag)) = &structure.tag
+                && *key == **tag_field
+            {
+                let mark = self.issues.len();
+                let value_event = self.next_event()?;
+                let matched = self.check_tag(tag, value_event);
+                self.prefix_issues(mark, || PathSegment::Key(key.into_owned()));
+                valid &= matched?;
+                continue;
+            }
             let index = structure.find_field(&key, slots.expected);
             let mark = self.issues.len();
             let field = self.field(structure, index, &mut slots);
@@ -96,6 +113,21 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             }
             None => Ok(false),
         }
+    }
+
+    /// Checks that the tag key of a structure read on its own holds the structure's tag.
+    fn check_tag(&mut self, tag: &str, event: Event<'input>) -> Result<bool, Stop<S::Error>> {
+        if matches!(&event, Event::String(text) if text == tag) {
+            return Ok(true);
+        }
+        self.report(
+            ErrorCode::Tag,
+            format!("expected the tag {tag:?}"),
+            super::input_preview(&event),
+            vec![("allowed", ContextValue::Texts(vec![tag.to_owned()]))],
+        )?;
+        self.skip_value(event)?;
+        Ok(false)
     }
 
     /// Reports required fields that never appeared. Returns whether none is missing.

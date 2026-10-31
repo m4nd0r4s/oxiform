@@ -5,3 +5,4 @@ mod limits;
 mod scalars;
 mod structs;
 mod support;
+mod unions;

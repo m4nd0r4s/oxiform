@@ -1,5 +1,7 @@
 //! The fields of dataclasses, looked up once per class.
 
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -44,6 +46,26 @@ impl Omission {
     }
 }
 
+/// What the declared type of a field adds to its runtime value.
+pub(super) enum EncodeHint {
+    /// A tagged union: the tag of each class, and where to write it.
+    Tagged {
+        mode: HintMode,
+        tags: Py<PyDict>,
+    },
+    List(Box<EncodeHint>),
+    Dict(Box<EncodeHint>),
+}
+
+pub(super) enum HintMode {
+    /// The tag is a key of the model itself.
+    Internal(String),
+    /// The tag key and the key that holds the model.
+    Adjacent(String, String),
+    /// The tag is the only key, holding the model.
+    External,
+}
+
 /// One field that is written.
 pub(super) struct TableField {
     name: Py<PyString>,
@@ -52,6 +74,9 @@ pub(super) struct TableField {
     offset: Option<isize>,
     pub(super) flatten: bool,
     pub(super) omission: Omission,
+    /// A fixed value written instead of an attribute.
+    pub(super) constant: Option<Py<PyString>>,
+    pub(super) hint: Option<Arc<EncodeHint>>,
 }
 
 /// How to write the fields of one dataclass.
@@ -135,9 +160,9 @@ pub(super) fn field_table<'py>(
     }
     let mut sorted: Vec<usize> = (0..fields.len()).collect();
     sorted.sort_by_key(|&index| fields[index].wire_name.bind(py).to_string());
-    let simple = fields
-        .iter()
-        .all(|field| !field.flatten && field.omission.never());
+    let simple = fields.iter().all(|field| {
+        !field.flatten && field.omission.never() && field.constant.is_none() && field.hint.is_none()
+    });
     let table = Bound::new(
         py,
         FieldTable {
@@ -166,7 +191,15 @@ fn read_field(cls: &Bound<'_, PyType>, field: &Bound<'_, PyAny>) -> PyResult<Tab
         })
     };
     let if_predicate = field.getattr("omit_if")?;
+    let constant = field.getattr("constant")?;
+    let hint = field.getattr("hint")?;
     Ok(TableField {
+        constant: (!constant.is_none())
+            .then(|| constant.cast_into::<PyString>().map(Bound::unbind))
+            .transpose()?,
+        hint: (!hint.is_none())
+            .then(|| read_hint(&hint).map(Arc::new))
+            .transpose()?,
         offset: slot_offset(cls, &name)?,
         name: PyString::intern(py, &name).unbind(),
         wire_name: PyString::intern(py, &wire_name).unbind(),
@@ -176,5 +209,26 @@ fn read_field(cls: &Bound<'_, PyType>, field: &Bound<'_, PyAny>) -> PyResult<Tab
             if_default,
             if_predicate: (!if_predicate.is_none()).then(|| if_predicate.unbind()),
         },
+    })
+}
+
+fn read_hint(hint: &Bound<'_, PyAny>) -> PyResult<EncodeHint> {
+    let parts = hint.cast::<PyTuple>()?;
+    Ok(match parts.get_item(0)?.extract::<String>()?.as_str() {
+        "list" => EncodeHint::List(Box::new(read_hint(&parts.get_item(1)?)?)),
+        "dict" => EncodeHint::Dict(Box::new(read_hint(&parts.get_item(1)?)?)),
+        _ => {
+            let mode = match parts.get_item(1)?.extract::<String>()?.as_str() {
+                "internal" => HintMode::Internal(parts.get_item(2)?.extract()?),
+                "adjacent" => {
+                    HintMode::Adjacent(parts.get_item(2)?.extract()?, parts.get_item(3)?.extract()?)
+                }
+                _ => HintMode::External,
+            };
+            EncodeHint::Tagged {
+                mode,
+                tags: parts.get_item(4)?.cast_into::<PyDict>()?.unbind(),
+            }
+        }
     })
 }

@@ -3,7 +3,7 @@
 
 use oxiform_core::description::{
     Bound as NumericBound, Constraints, Description, FieldDescription, Literal, StructDescription,
-    TypeDescription, UnknownFields,
+    TagMode, TypeDescription, UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -97,6 +97,8 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
         name: description.getattr("name")?.extract()?,
         fields,
         unknown_fields,
+        tag: description.getattr("tag")?.extract()?,
+        tag_field: description.getattr("tag_field")?.extract()?,
     };
     let runtime = StructRuntime {
         layout: read_layout(&description.getattr("layout")?)?,
@@ -175,12 +177,37 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<TypeDescription> {
         },
         "optional" => TypeDescription::Optional(Box::new(read_type(&parts.get_item(1)?)?)),
         "struct" => TypeDescription::Struct(parts.get_item(1)?.extract()?),
+        "union" => TypeDescription::Union(read_types(&parts.get_item(1)?)?),
+        "untagged" => TypeDescription::Untagged(read_types(&parts.get_item(1)?)?),
+        "tagged" => {
+            let mode = match parts.get_item(1)?.extract::<String>()?.as_str() {
+                "internal" => TagMode::Internal {
+                    tag: parts.get_item(2)?.extract()?,
+                },
+                "adjacent" => TagMode::Adjacent {
+                    tag: parts.get_item(2)?.extract()?,
+                    content: parts.get_item(3)?.extract()?,
+                },
+                _ => TagMode::External,
+            };
+            TypeDescription::Tagged {
+                mode,
+                variants: read_types(&parts.get_item(4)?)?,
+            }
+        }
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown type kind {other:?}"
             )));
         }
     })
+}
+
+fn read_types(descriptions: &Bound<'_, PyAny>) -> PyResult<Vec<TypeDescription>> {
+    descriptions
+        .try_iter()?
+        .map(|description| read_type(&description?))
+        .collect()
 }
 
 fn read_constraints(values: &Bound<'_, PyAny>) -> PyResult<Constraints> {

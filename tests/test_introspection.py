@@ -45,6 +45,19 @@ def test_describes_containers_and_optionals() -> None:
     assert describe(Optional[str]).root == ("optional", ("str", {}))  # noqa: UP045
 
 
+def test_describes_unions() -> None:
+    assert describe(int | str | None).root == ("union", (("int", {}), ("str", {}), ("none",)))
+    tagged = describe(Annotated[Address | User | None, ox.Tagged("type", content="data")])
+    assert tagged.root == (
+        "optional",
+        ("tagged", "adjacent", "type", "data", (("struct", 0), ("struct", 1))),
+    )
+    assert describe(Annotated[int | str, ox.Untagged()]).root == (
+        "untagged",
+        (("int", {}), ("str", {})),
+    )
+
+
 def test_maps_constraints_to_values() -> None:
     annotated = Annotated[int, ox.Ge(0), ox.Le(10.5), ox.OneOf(1, 2)]
     assert describe(annotated).root == ("int", {"minimum": 0, "maximum": 10.5, "one_of": [1, 2]})
@@ -98,7 +111,8 @@ def test_skips_fields_outside_init() -> None:
     ("annotation", "message"),
     [
         (complex, "root: unsupported type <class 'complex'>"),
-        (int | str, "root: unions other than T | None are not supported yet"),
+        (Annotated[int | str, ox.Ge(0)], "root: constraints do not apply to a union"),
+        (Annotated[int, ox.Tagged("t")], "root: ox.Tagged applies to a union, not <class 'int'>"),
         (dict[int, str], "root: dict keys must be str, not <class 'int'>"),
         (Annotated[bool, ox.Ge(0)], "root: constraints do not apply to bool"),
         (Annotated[int, ox.Ge(0), ox.Ge(1)], "root: Ge is declared twice"),

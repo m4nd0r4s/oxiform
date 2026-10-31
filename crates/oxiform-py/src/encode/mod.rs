@@ -1,9 +1,11 @@
 //! Walks Python objects by their runtime type and hands them to a format writer.
 
 mod fields;
+mod hints;
 pub(crate) mod json;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use oxiform_core::issues::PathSegment;
 use oxiform_core::writer::{EventWriter, WriteError};
@@ -11,6 +13,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use crate::python_objects::encode_error;
+
+/// A key, its value, and what the declared type adds to the value.
+type Entry<'py> = (String, Bound<'py, PyAny>, Option<Arc<fields::EncodeHint>>);
 
 /// Nesting deeper than this is refused: it is almost always a reference cycle.
 const MAX_DEPTH: usize = 128;
@@ -207,8 +212,18 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
         object: &Bound<'_, PyAny>,
         table: &fields::FieldTable,
     ) -> Result<(), EncodeFailure> {
+        self.tagged_structure(object, table, None)
+    }
+
+    /// Writes a model, with `tag` (a key and its value) as its first entry when given.
+    fn tagged_structure<'py>(
+        &mut self,
+        object: &Bound<'py, PyAny>,
+        table: &fields::FieldTable,
+        tag: Option<(&str, Bound<'py, PyAny>)>,
+    ) -> Result<(), EncodeFailure> {
         self.enter()?;
-        if table.is_simple() {
+        if table.is_simple() && tag.is_none() {
             self.writer.map_start(table.len());
             for position in 0..table.len() {
                 let index = table.index(position, self.sort_keys);
@@ -216,14 +231,22 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
                 self.entry(table.wire_name(object.py(), index).to_str()?, &value)?;
             }
         } else {
-            let mut entries = Vec::with_capacity(table.len());
+            let mut entries = Vec::with_capacity(table.len() + 1);
+            if let Some((key, value)) = tag {
+                entries.push((key.to_owned(), value, None));
+            }
             self.collect_entries(object, table, &mut entries)?;
             if self.sort_keys {
                 entries.sort_by(|left, right| left.0.cmp(&right.0));
             }
             self.writer.map_start(entries.len());
-            for (key, value) in entries {
-                self.entry(&key, &value)?;
+            for (key, value, hint) in entries {
+                self.writer.key(&key);
+                let written = match &hint {
+                    Some(hint) => self.hinted(&value, hint),
+                    None => self.value(&value),
+                };
+                written.map_err(|failure| failure.at(|| PathSegment::Key(key.clone())))?;
             }
         }
         self.writer.map_end();
@@ -236,17 +259,22 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
         &mut self,
         object: &Bound<'py, PyAny>,
         table: &fields::FieldTable,
-        entries: &mut Vec<(String, Bound<'py, PyAny>)>,
+        entries: &mut Vec<Entry<'py>>,
     ) -> Result<(), EncodeFailure> {
+        let py = object.py();
         for index in 0..table.len() {
             let field = table.field(index);
+            let key = table.wire_name(py, index).to_str()?;
+            if let Some(constant) = &field.constant {
+                entries.push((key.to_owned(), constant.bind(py).clone().into_any(), None));
+                continue;
+            }
             let value = table.read(object, index)?;
             if field.omission.applies(&value)? {
                 continue;
             }
-            let key = table.wire_name(object.py(), index).to_str()?;
             if !field.flatten {
-                entries.push((key.to_owned(), value));
+                entries.push((key.to_owned(), value, field.hint.clone()));
                 continue;
             }
             let Some(inner) = fields::field_table(&value.get_type())? else {

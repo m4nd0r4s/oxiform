@@ -1,7 +1,7 @@
 use super::compile;
 use crate::description::{
-    Bound, Constraints, Description, FieldDescription, Literal, StructDescription, TypeDescription,
-    UnknownFields,
+    Bound, Constraints, Description, FieldDescription, Literal, StructDescription, TagMode,
+    TypeDescription, UnknownFields,
 };
 use crate::plan::Node;
 
@@ -22,6 +22,8 @@ fn single_struct(fields: Vec<FieldDescription>) -> Description {
             name: "User".into(),
             fields,
             unknown_fields: UnknownFields::Ignore,
+            tag: "User".into(),
+            tag_field: None,
         }],
     }
 }
@@ -240,5 +242,94 @@ fn rejects_unknown_structure_indices() {
     assert_eq!(
         error_message(&description),
         "root: unknown structure index 3"
+    );
+}
+
+fn two_structs(root: TypeDescription) -> Description {
+    let mut description = single_struct(vec![field(
+        "id",
+        TypeDescription::Integer(Constraints::default()),
+    )]);
+    let mut other = description.structs[0].clone();
+    other.name = "Admin".into();
+    other.tag = "Admin".into();
+    description.structs.push(other);
+    description.root = root;
+    description
+}
+
+#[test]
+fn rejects_unions_with_two_variants_of_the_same_kind() {
+    let union = TypeDescription::Union(vec![
+        TypeDescription::Integer(Constraints::default()),
+        TypeDescription::Bool,
+        TypeDescription::Integer(Constraints::default()),
+    ]);
+    assert_eq!(
+        error_message(&two_structs(union)),
+        "root: int and int are both read from an integer; \
+         tell them apart with ox.Tagged or use ox.Untagged"
+    );
+    let structs =
+        TypeDescription::Union(vec![TypeDescription::Struct(0), TypeDescription::Struct(1)]);
+    assert_eq!(
+        error_message(&two_structs(structs)),
+        "root: User and Admin are both read from a map; give the models the same tag_field, \
+         tell them apart with ox.Tagged or use ox.Untagged"
+    );
+    let with_any = TypeDescription::Union(vec![TypeDescription::Any, TypeDescription::None]);
+    assert_eq!(
+        error_message(&two_structs(with_any)),
+        "root: Any cannot be a variant of a union"
+    );
+}
+
+#[test]
+fn rejects_tagged_unions_that_cannot_tell_variants_apart() {
+    let tagged = |variants| TypeDescription::Tagged {
+        mode: TagMode::Internal { tag: "id".into() },
+        variants,
+    };
+    assert_eq!(
+        error_message(&two_structs(tagged(vec![
+            TypeDescription::Bool,
+            TypeDescription::Struct(0)
+        ]))),
+        "root: only models can be variants of a tagged union, not bool"
+    );
+    assert_eq!(
+        error_message(&two_structs(tagged(vec![
+            TypeDescription::Struct(0),
+            TypeDescription::Struct(1)
+        ]))),
+        "root: User has a field read from the tag key \"id\""
+    );
+    let mut same_tag = two_structs(TypeDescription::Tagged {
+        mode: TagMode::External,
+        variants: vec![TypeDescription::Struct(0), TypeDescription::Struct(1)],
+    });
+    same_tag.structs[1].tag = "User".into();
+    assert_eq!(
+        error_message(&same_tag),
+        "root: User and Admin have the same tag \"User\""
+    );
+    let mut other_field = two_structs(TypeDescription::Tagged {
+        mode: TagMode::Internal { tag: "type".into() },
+        variants: vec![TypeDescription::Struct(0), TypeDescription::Struct(1)],
+    });
+    other_field.structs[1].tag_field = Some("kind".into());
+    assert_eq!(
+        error_message(&other_field),
+        "root: the union is tagged by \"type\", but Admin declares the tag_field \"kind\""
+    );
+}
+
+#[test]
+fn rejects_a_tag_field_that_is_also_a_field() {
+    let mut description = two_structs(TypeDescription::Struct(0));
+    description.structs[0].tag_field = Some("id".into());
+    assert_eq!(
+        error_message(&description),
+        "User: a field is read from the tag field \"id\""
     );
 }

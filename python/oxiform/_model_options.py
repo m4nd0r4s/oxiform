@@ -21,6 +21,10 @@ class ModelOptions:
     unknown: UnknownFields = "ignore"
     skip_if_default: bool = False
     skip_if_none: bool = False
+    tag: str | None = None
+    """The tag of this class in a tagged union. Not inherited; see ``tag_of``."""
+    tag_field: str | None = None
+    """The key that holds the tag, written on encode and checked on decode."""
 
 
 _DEFAULTS = ModelOptions()
