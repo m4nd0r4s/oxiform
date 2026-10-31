@@ -13,7 +13,7 @@ use crate::issues::{ContextValue, ErrorCode};
 use crate::plan::{LengthRange, NumberChecks, StringChecks};
 use crate::sink::Sink;
 
-impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
+impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn integer(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
         let Event::Number(text) = event else {
             return self.mismatch("int", event);

@@ -1,16 +1,13 @@
 //! Lists, dicts and untyped values.
 
-use std::borrow::Cow;
-use std::collections::HashSet;
-
 use super::numbers::is_integer_text;
-use super::{Executor, Step};
+use super::{Executor, PathStep, Step, Stop};
 use crate::events::{Event, EventReader};
-use crate::issues::{ErrorCode, PathSegment};
+use crate::issues::ErrorCode;
 use crate::plan::{LengthRange, NodeId};
 use crate::sink::Sink;
 
-impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
+impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     /// A value of any type, built from what the input holds.
     pub(crate) fn any(&mut self, event: Event<'input>) -> Step<S> {
         match event {
@@ -57,7 +54,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
             if index >= self.limits.max_items {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the list"));
             }
-            self.path.push(PathSegment::Index(index));
+            self.path.push(PathStep::Index(index));
             let item = self.element(items, event);
             self.path.pop();
             match item? {
@@ -86,61 +83,63 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         if event != Event::MapStart {
             return self.mismatch("dict", event);
         }
-        let mut entries = Vec::new();
-        let mut keys = HashSet::new();
+        let mut map = self.sink.map_new().map_err(Stop::Sink)?;
         let mut valid = true;
+        let mut count = 0;
         loop {
             let key = match self.next_event()? {
                 Event::MapEnd => break,
                 Event::Key(key) => key,
                 _ => unreachable!("readers emit a key or the end of a map inside a map"),
             };
-            if keys.len() >= self.limits.max_items {
+            if count >= self.limits.max_items {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the dict"));
             }
+            count += 1;
             self.check_string_size(&key)?;
-            self.path.push(PathSegment::Key(key.to_string()));
-            let value = self.entry(values, key.clone(), &mut keys);
+            self.path.push(PathStep::Key(key));
+            let entry = self.entry(values, &mut map, valid);
             self.path.pop();
-            match value? {
-                Some(value) if valid => {
-                    let key = self
-                        .emit(|sink| sink.string(&key))?
-                        .expect("emit returns a value");
-                    entries.push((key, value));
-                }
-                Some(_) => {}
-                None => valid = false,
-            }
+            valid &= entry?;
         }
         if !length.is_unbounded() {
-            valid &= self.check_length(length, keys.len(), || None)?;
+            valid &= self.check_length(length, count, || None)?;
         }
         if !valid {
             return Ok(None);
         }
-        self.emit(|sink| sink.dict(entries))
+        self.sink.map_finish(map).map(Some).map_err(Stop::Sink)
     }
 
-    /// Reads the value of `key`, with the path already at the key; a repeated key is an issue.
+    /// Reads the value of the key at the top of the path into `map` (only while the dict is
+    /// still valid). Returns whether the entry is valid; a repeated key is an issue.
     fn entry(
         &mut self,
         values: Option<NodeId>,
-        key: Cow<'input, str>,
-        keys: &mut HashSet<Cow<'input, str>>,
-    ) -> Step<S> {
+        map: &mut S::Map,
+        insert: bool,
+    ) -> Result<bool, Stop<S::Error>> {
         let value_event = self.next_event()?;
-        if !keys.insert(key.clone()) {
-            self.report(
-                ErrorCode::DuplicateKey,
-                "duplicate key".into(),
-                Some(key.into_owned()),
-                Vec::new(),
-            )?;
-            self.skip_value(value_event)?;
-            return Ok(None);
+        let Some(value) = self.element(values, value_event)? else {
+            return Ok(false);
+        };
+        if !insert {
+            return Ok(true);
         }
-        self.element(values, value_event)
+        let Some(PathStep::Key(key)) = self.path.last() else {
+            unreachable!("the key is on the path")
+        };
+        let key = key.clone();
+        if self.sink.map_insert(map, &key, value).map_err(Stop::Sink)? {
+            return Ok(true);
+        }
+        self.report(
+            ErrorCode::DuplicateKey,
+            "duplicate key".into(),
+            Some(key.into_owned()),
+            Vec::new(),
+        )?;
+        Ok(false)
     }
 
     fn element(&mut self, node: Option<NodeId>, event: Event<'input>) -> Step<S> {

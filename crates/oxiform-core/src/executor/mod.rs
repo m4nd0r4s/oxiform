@@ -6,6 +6,10 @@ mod numbers;
 mod scalars;
 mod structs;
 
+use std::borrow::Cow;
+
+use smallvec::SmallVec;
+
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
 use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
 use crate::limits::Limits;
@@ -40,7 +44,7 @@ where
         reader,
         sink,
         limits,
-        path: Vec::new(),
+        path: SmallVec::new(),
         issues: Vec::new(),
     };
     let outcome = executor.run();
@@ -72,16 +76,24 @@ pub(crate) enum Stop<SinkError> {
 /// The value of one step, or `None` when the input did not match and the issue is recorded.
 pub(crate) type Step<S> = Result<Option<<S as Sink>::Value>, Stop<<S as Sink>::Error>>;
 
-pub(crate) struct Executor<'run, R, S> {
+/// One step of the path while reading. Keys stay borrowed from the input; an owned
+/// [`PathSegment`] is made only when an issue is recorded.
+#[derive(Debug, Clone)]
+pub(crate) enum PathStep<'input> {
+    Key(Cow<'input, str>),
+    Index(usize),
+}
+
+pub(crate) struct Executor<'run, 'input, R, S> {
     plan: &'run Plan,
     reader: &'run mut R,
     sink: &'run mut S,
     limits: &'run Limits,
-    path: Vec<PathSegment>,
+    path: SmallVec<[PathStep<'input>; 8]>,
     issues: Vec<Issue>,
 }
 
-impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
+impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     fn run(&mut self) -> Step<S> {
         let event = self.next_event()?;
         let value = self.value(self.plan.root(), event)?;
@@ -136,9 +148,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         input: Option<String>,
         context: Vec<(&'static str, ContextValue)>,
     ) -> Result<(), Stop<S::Error>> {
+        let path = self.owned_path();
         self.issues.push(Issue {
             code,
-            path: self.path.clone(),
+            path,
             message,
             input,
             context,
@@ -172,9 +185,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
         limit: usize,
         what: &str,
     ) -> Stop<S::Error> {
+        let path = self.owned_path();
         self.issues.push(Issue {
             code: ErrorCode::LimitExceeded,
-            path: self.path.clone(),
+            path,
             message: format!("{what} exceeds the limit {limit_name}={limit}"),
             input: None,
             context: vec![
@@ -214,14 +228,25 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, R, S> {
             "{} (line {}, column {})",
             error.message, error.line, error.column
         );
+        let path = self.owned_path();
         self.issues.push(Issue {
             code,
-            path: self.path.clone(),
+            path,
             message,
             input: None,
             context,
         });
         Stop::Unreadable
+    }
+
+    fn owned_path(&self) -> Vec<PathSegment> {
+        self.path
+            .iter()
+            .map(|step| match step {
+                PathStep::Key(key) => PathSegment::Key(key.to_string()),
+                PathStep::Index(index) => PathSegment::Index(*index),
+            })
+            .collect()
     }
 
     /// Consumes the rest of the value that starts with `event`.

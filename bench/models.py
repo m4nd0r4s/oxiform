@@ -189,10 +189,7 @@ def _pydantic(model: type[pydantic.BaseModel]) -> Callable[[bytes], object]:
 
 
 def _oxiform(model: type) -> Callable[[bytes], object]:
-    def decode(data: bytes) -> object:
-        return ox.json.decode(data, model)
-
-    return decode
+    return ox.json.Decoder(model).decode
 
 
 DECODERS: dict[str, dict[str, Callable[[bytes], object]]] = {
@@ -212,8 +209,8 @@ DECODERS: dict[str, dict[str, Callable[[bytes], object]]] = {
         "pydantic": _pydantic(PyOrder),
     },
     "untyped": {
-        "oxiform": ox.json.decode,
-        "msgspec": msgspec.json.decode,
+        "oxiform": ox.json.Decoder().decode,
+        "msgspec": msgspec.json.Decoder().decode,
         "orjson": orjson.loads,
     },
 }

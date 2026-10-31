@@ -3,7 +3,7 @@
 
 mod node;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 pub use node::{LengthRange, Node, NumberChecks, StringChecks};
 
@@ -55,7 +55,7 @@ pub struct StructPlan {
     pub name: String,
     pub fields: Vec<FieldPlan>,
     pub unknown_fields: UnknownFields,
-    field_indices: HashMap<String, usize>,
+    field_indices: FxHashMap<String, usize>,
 }
 
 impl StructPlan {
@@ -76,6 +76,15 @@ impl StructPlan {
     /// The index of the field read from `wire_name`.
     pub fn field_index(&self, wire_name: &str) -> Option<usize> {
         self.field_indices.get(wire_name).copied()
+    }
+
+    /// Like [`field_index`](Self::field_index), checking `expected` first: keys usually come
+    /// in declaration order, so this is one string comparison instead of a hash lookup.
+    pub fn find_field(&self, wire_name: &str, expected: usize) -> Option<usize> {
+        match self.fields.get(expected) {
+            Some(field) if field.wire_name == wire_name => Some(expected),
+            _ => self.field_index(wire_name),
+        }
     }
 }
 

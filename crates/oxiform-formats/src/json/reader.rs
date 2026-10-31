@@ -1,6 +1,7 @@
 //! A validating pull reader that turns JSON text into events.
 
 use oxiform_core::events::{Event, EventReader, ReaderError, ReaderErrorKind};
+use smallvec::SmallVec;
 
 use super::location::line_and_column;
 use super::number::scan_number;
@@ -36,7 +37,7 @@ pub struct JsonReader<'input> {
     input: &'input str,
     position: usize,
     event_offset: usize,
-    containers: Vec<Container>,
+    containers: SmallVec<[Container; 32]>,
     state: State,
     max_depth: usize,
 }
@@ -48,7 +49,7 @@ impl<'input> JsonReader<'input> {
             input,
             position: 0,
             event_offset: 0,
-            containers: Vec::new(),
+            containers: SmallVec::new(),
             state: State::Value,
             max_depth,
         }

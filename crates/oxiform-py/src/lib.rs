@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 fn _oxiform(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_function(wrap_pyfunction!(decode::json_decode, module)?)?;
+    module.add_class::<decode::JsonDecoder>()?;
     module.add_class::<compiled::PlanHandle>()?;
     Ok(())
 }

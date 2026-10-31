@@ -6,6 +6,7 @@ use oxiform_core::description::{
     TypeDescription, UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyInt, PyString, PyTuple, PyType};
 
@@ -16,11 +17,19 @@ pub(crate) enum FieldDefault {
     Factory(Py<PyAny>),
 }
 
+/// How a field is stored on an instance.
+pub(crate) enum FieldSetter {
+    /// A `__slots__` member: the value is written at this byte offset in the object.
+    Slot(isize),
+    /// Anything else: set through the generic attribute setter.
+    Attribute(Py<PyString>),
+}
+
 /// How to create instances of one structure.
 pub(crate) struct StructRuntime {
     pub(crate) cls: Py<PyType>,
-    /// Attribute names, interned, in field order.
-    pub(crate) field_names: Vec<Py<PyString>>,
+    /// In field order.
+    pub(crate) setters: Vec<FieldSetter>,
     pub(crate) defaults: Vec<FieldDefault>,
     pub(crate) has_post_init: bool,
 }
@@ -41,9 +50,9 @@ pub(crate) fn read_description(
 }
 
 fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, StructRuntime)> {
-    let py = description.py();
     let mut fields = Vec::new();
-    let mut field_names = Vec::new();
+    let cls = description.getattr("cls")?.cast_into::<PyType>()?;
+    let mut setters = Vec::new();
     let mut defaults = Vec::new();
     for field in description.getattr("fields")?.try_iter()? {
         let field = field?;
@@ -55,7 +64,7 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
             has_default: !matches!(default, FieldDefault::Required),
             name: name.clone(),
         });
-        field_names.push(PyString::intern(py, &name).unbind());
+        setters.push(field_setter(&cls, &name)?);
         defaults.push(default);
     }
     let unknown_fields = match description
@@ -72,12 +81,36 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
         unknown_fields,
     };
     let runtime = StructRuntime {
-        cls: description.getattr("cls")?.cast_into::<PyType>()?.unbind(),
-        field_names,
+        cls: cls.unbind(),
+        setters,
         defaults,
         has_post_init: description.getattr("has_post_init")?.extract()?,
     };
     Ok((struct_description, runtime))
+}
+
+/// Finds the `__slots__` member of `name` along the MRO of `cls`, if there is one.
+fn field_setter(cls: &Bound<'_, PyType>, name: &str) -> PyResult<FieldSetter> {
+    let py = cls.py();
+    let member_type = py.import("types")?.getattr("MemberDescriptorType")?;
+    for klass in cls.getattr("__mro__")?.try_iter()? {
+        let Some(descriptor) = klass?.getattr("__dict__")?.get_item(name).ok() else {
+            continue;
+        };
+        if !descriptor.get_type().is(&member_type) {
+            break;
+        }
+        // SAFETY: `descriptor` is a member descriptor, whose C layout is
+        // `PyMemberDescrObject`; it stays alive as long as the class, which the plan keeps.
+        let member =
+            unsafe { &*(*descriptor.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member };
+        let writable = member.flags & ffi::Py_READONLY == 0;
+        if member.type_code == ffi::Py_T_OBJECT_EX && writable && member.offset > 0 {
+            return Ok(FieldSetter::Slot(member.offset));
+        }
+        break;
+    }
+    Ok(FieldSetter::Attribute(PyString::intern(py, name).unbind()))
 }
 
 fn read_default(default: &Bound<'_, PyAny>) -> PyResult<FieldDefault> {
