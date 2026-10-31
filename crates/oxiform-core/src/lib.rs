@@ -4,4 +4,8 @@
 pub mod compiler;
 pub mod description;
 pub mod events;
+pub mod executor;
+pub mod issues;
+pub mod limits;
 pub mod plan;
+pub mod sink;
