@@ -31,6 +31,7 @@ Issues = "https://github.com/m4nd0r4s/oxiform/issues"
 
 [dependency-groups]
 dev = ["maturin>=1.9,<2", "pytest>=8", "pyright>=1.1.400", "ruff>=0.14"]
+bench = ["msgspec>=0.19", "pydantic>=2.10", "orjson>=3.10"]
 
 [tool.maturin]
 manifest-path = "crates/oxiform-py/Cargo.toml"
