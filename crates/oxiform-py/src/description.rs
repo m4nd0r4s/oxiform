@@ -61,6 +61,7 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
         let default = read_default(&field.getattr("default")?)?;
         fields.push(FieldDescription {
             wire_name: field.getattr("wire_name")?.extract()?,
+            aliases: Vec::new(),
             value_type: read_type(&field.getattr("value_type")?)?,
             has_default: !matches!(default, FieldDefault::Required),
             name: name.clone(),

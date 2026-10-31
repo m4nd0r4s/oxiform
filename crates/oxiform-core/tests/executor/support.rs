@@ -95,6 +95,7 @@ pub fn field(name: &str, value_type: TypeDescription) -> FieldDescription {
     FieldDescription {
         name: name.into(),
         wire_name: name.into(),
+        aliases: Vec::new(),
         value_type,
         has_default: false,
     }

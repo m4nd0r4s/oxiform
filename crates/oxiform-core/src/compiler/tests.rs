@@ -9,6 +9,7 @@ fn field(name: &str, value_type: TypeDescription) -> FieldDescription {
     FieldDescription {
         name: name.into(),
         wire_name: name.into(),
+        aliases: Vec::new(),
         value_type,
         has_default: false,
     }
@@ -203,6 +204,23 @@ fn rejects_two_fields_read_from_the_same_key() {
         TypeDescription::Integer(Constraints::default()),
     );
     second.wire_name = "id".into();
+    let description = single_struct(vec![
+        field("id", TypeDescription::Integer(Constraints::default())),
+        second,
+    ]);
+    assert_eq!(
+        error_message(&description),
+        "User.identifier: another field is already read from the key \"id\""
+    );
+}
+
+#[test]
+fn rejects_an_alias_that_another_field_is_read_from() {
+    let mut second = field(
+        "identifier",
+        TypeDescription::Integer(Constraints::default()),
+    );
+    second.aliases = vec!["key".into(), "id".into()];
     let description = single_struct(vec![
         field("id", TypeDescription::Integer(Constraints::default())),
         second,

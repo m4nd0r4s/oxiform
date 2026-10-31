@@ -71,19 +71,19 @@ impl Compiler<'_> {
         let mut fields = Vec::with_capacity(description.fields.len());
         for field in &description.fields {
             let location = format!("{}.{}", description.name, field.name);
-            if !wire_names.insert(field.wire_name.as_str()) {
-                return Err(declaration_error(
-                    &location,
-                    format!(
-                        "another field is already read from the key {:?}",
-                        field.wire_name
-                    ),
-                ));
+            for key in std::iter::once(&field.wire_name).chain(&field.aliases) {
+                if !wire_names.insert(key.as_str()) {
+                    return Err(declaration_error(
+                        &location,
+                        format!("another field is already read from the key {key:?}"),
+                    ));
+                }
             }
             let value = self.compile_type(&field.value_type, &location)?;
             fields.push(FieldPlan {
                 name: field.name.clone(),
                 wire_name: field.wire_name.clone(),
+                aliases: field.aliases.clone(),
                 value,
                 has_default: field.has_default,
             });
