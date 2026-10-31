@@ -172,3 +172,24 @@ fn enforces_the_depth_limit() {
     assert_eq!(rejected.kind, ReaderErrorKind::DepthLimit { limit: 2 });
     assert!(events(&"[".repeat(100_000)).is_err());
 }
+
+#[test]
+fn finds_specials_at_every_position_of_a_word() {
+    for length in 0..24 {
+        let plain = "é".repeat(length / 2) + &"a".repeat(length % 2);
+        assert_eq!(
+            events(&format!("\"{plain}\"")).unwrap(),
+            [Event::String(Cow::Borrowed(plain.as_str()))]
+        );
+        let escaped = format!("\"{plain}\\n{plain}\"");
+        assert_eq!(
+            events(&escaped).unwrap(),
+            [Event::String(Cow::Owned(format!("{plain}\n{plain}")))]
+        );
+        let control = format!("\"{plain}\u{1}\"");
+        assert_eq!(
+            error(&control).message,
+            "control characters must be escaped in strings"
+        );
+    }
+}

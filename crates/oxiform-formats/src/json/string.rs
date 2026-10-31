@@ -12,6 +12,7 @@ pub(crate) fn read_string(input: &str, quote: usize) -> Result<(Cow<'_, str>, us
     let start = quote + 1;
     let mut position = start;
     loop {
+        position = find_special(bytes, position);
         match bytes.get(position) {
             None => return Err((quote, "unterminated string")),
             Some(b'"') => return Ok((Cow::Borrowed(&input[start..position]), position + 1)),
@@ -37,6 +38,7 @@ fn read_escaped(
     let bytes = input.as_bytes();
     let mut run_start = position;
     loop {
+        position = find_special(bytes, position);
         match bytes.get(position) {
             None => return Err((quote, "unterminated string")),
             Some(b'"') => {
@@ -117,4 +119,33 @@ fn read_hex4(bytes: &[u8], start: usize) -> Result<u32, StringError> {
         value = value * 16 + digit.ok_or((start - 2, "expected 4 hex digits in \\u escape"))?;
     }
     Ok(value)
+}
+
+/// The offset of the first `"`, `\\` or control character at or after `position`, or the end
+/// of the input. Checks eight bytes at a time.
+fn find_special(bytes: &[u8], mut position: usize) -> usize {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+    while let Some(chunk) = bytes.get(position..position + 8) {
+        let word = u64::from_le_bytes(chunk.try_into().expect("the chunk has eight bytes"));
+        let quotes = word ^ (ONES * u64::from(b'"'));
+        let backslashes = word ^ (ONES * u64::from(b'\\'));
+        // A byte is flagged when it is zero (after the XOR) or below 0x20. Borrows can only
+        // flag bytes after a real match, so the lowest flag is exact.
+        let flags = (quotes.wrapping_sub(ONES) & !quotes)
+            | (backslashes.wrapping_sub(ONES) & !backslashes)
+            | (word.wrapping_sub(ONES * 0x20) & !word);
+        let flags = flags & HIGH_BITS;
+        if flags != 0 {
+            return position + (flags.trailing_zeros() / 8) as usize;
+        }
+        position += 8;
+    }
+    while let Some(&byte) = bytes.get(position) {
+        if byte == b'"' || byte == b'\\' || byte < 0x20 {
+            break;
+        }
+        position += 1;
+    }
+    position
 }
