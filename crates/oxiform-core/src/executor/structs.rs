@@ -1,13 +1,11 @@
 //! Structures: named fields read from a map.
 
-use std::borrow::Cow;
-
 use smallvec::{SmallVec, smallvec};
 
-use super::{Executor, PathStep, Step, Stop};
+use super::{Executor, Step, Stop};
 use crate::description::UnknownFields;
 use crate::events::{Event, EventReader};
-use crate::issues::ErrorCode;
+use crate::issues::{ErrorCode, PathSegment};
 use crate::plan::{StructId, StructPlan};
 use crate::sink::Sink;
 
@@ -45,9 +43,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             }
             self.check_string_size(&key)?;
             let index = structure.find_field(&key, slots.expected);
-            self.path.push(PathStep::Key(key));
+            let mark = self.issues.len();
             let field = self.field(structure, index, &mut slots);
-            self.path.pop();
+            self.prefix_issues(mark, || PathSegment::Key(key.into_owned()));
             valid &= field?;
         }
         valid &= self.check_missing(structure, &slots.seen)?;
@@ -57,8 +55,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         self.emit(|sink| sink.instance(id, &mut slots.values))
     }
 
-    /// Reads the value of field `index` (`None`: an unknown key), with the path already at
-    /// the key. Returns whether it is valid.
+    /// Reads the value of field `index` (`None`: an unknown key),  Returns whether it is valid.
     fn field(
         &mut self,
         structure: &StructPlan,
@@ -110,15 +107,14 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let mut complete = true;
         for (field, was_seen) in structure.fields.iter().zip(seen) {
             if !was_seen && !field.has_default {
-                self.path
-                    .push(PathStep::Key(Cow::Owned(field.wire_name.clone())));
+                let mark = self.issues.len();
                 let reported = self.report(
                     ErrorCode::Missing,
                     "field required".into(),
                     None,
                     Vec::new(),
                 );
-                self.path.pop();
+                self.prefix_issues(mark, || PathSegment::Key(field.wire_name.clone()));
                 reported?;
                 complete = false;
             }

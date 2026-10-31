@@ -7,6 +7,7 @@ pub(crate) type StringError = (usize, &'static str);
 
 /// Reads the string whose opening quote is at `quote`. Returns the text and the offset just
 /// after the closing quote.
+#[inline]
 pub(crate) fn read_string(input: &str, quote: usize) -> Result<(Cow<'_, str>, usize), StringError> {
     let bytes = input.as_bytes();
     let start = quote + 1;
@@ -123,6 +124,7 @@ fn read_hex4(bytes: &[u8], start: usize) -> Result<u32, StringError> {
 
 /// The offset of the first `"`, `\\` or control character at or after `position`, or the end
 /// of the input. Checks eight bytes at a time.
+#[inline]
 fn find_special(bytes: &[u8], mut position: usize) -> usize {
     const ONES: u64 = 0x0101_0101_0101_0101;
     const HIGH_BITS: u64 = 0x8080_8080_8080_8080;

@@ -1,14 +1,15 @@
 //! Lists, dicts and untyped values.
 
 use super::numbers::is_integer_text;
-use super::{Executor, PathStep, Step, Stop};
+use super::{Executor, Step, Stop};
 use crate::events::{Event, EventReader};
-use crate::issues::ErrorCode;
+use crate::issues::{ErrorCode, PathSegment};
 use crate::plan::{LengthRange, NodeId};
 use crate::sink::Sink;
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     /// A value of any type, built from what the input holds.
+    #[inline]
     pub(crate) fn any(&mut self, event: Event<'input>) -> Step<S> {
         match event {
             Event::Null => self.emit(Sink::none),
@@ -54,9 +55,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             if index >= self.limits.max_items {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the list"));
             }
-            self.path.push(PathStep::Index(index));
+            let mark = self.issues.len();
             let item = self.element(items, event);
-            self.path.pop();
+            self.prefix_issues(mark, || PathSegment::Index(index));
             match item? {
                 Some(item) if valid => values.push(item),
                 Some(_) => {}
@@ -97,9 +98,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             }
             count += 1;
             self.check_string_size(&key)?;
-            self.path.push(PathStep::Key(key));
-            let entry = self.entry(values, &mut map, valid);
-            self.path.pop();
+            let mark = self.issues.len();
+            let entry = self.entry(values, &key, &mut map, valid);
+            self.prefix_issues(mark, || PathSegment::Key(key.into_owned()));
             valid &= entry?;
         }
         if !length.is_unbounded() {
@@ -111,11 +112,12 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         self.sink.map_finish(map).map(Some).map_err(Stop::Sink)
     }
 
-    /// Reads the value of the key at the top of the path into `map` (only while the dict is
+    /// Reads the value of `key` into `map` (only while the dict is
     /// still valid). Returns whether the entry is valid; a repeated key is an issue.
     fn entry(
         &mut self,
         values: Option<NodeId>,
+        key: &str,
         map: &mut S::Map,
         insert: bool,
     ) -> Result<bool, Stop<S::Error>> {
@@ -126,22 +128,19 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         if !insert {
             return Ok(true);
         }
-        let Some(PathStep::Key(key)) = self.path.last() else {
-            unreachable!("the key is on the path")
-        };
-        let key = key.clone();
-        if self.sink.map_insert(map, &key, value).map_err(Stop::Sink)? {
+        if self.sink.map_insert(map, key, value).map_err(Stop::Sink)? {
             return Ok(true);
         }
         self.report(
             ErrorCode::DuplicateKey,
             "duplicate key".into(),
-            Some(key.into_owned()),
+            Some(key.to_owned()),
             Vec::new(),
         )?;
         Ok(false)
     }
 
+    #[inline]
     fn element(&mut self, node: Option<NodeId>, event: Event<'input>) -> Step<S> {
         match node {
             Some(node) => self.value(node, event),

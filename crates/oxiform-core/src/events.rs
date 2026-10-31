@@ -32,9 +32,28 @@ pub enum ReaderErrorKind {
     DepthLimit { limit: usize },
 }
 
-/// A reader failure with its place in the input.
+/// A reader failure with its place in the input. Boxed, so the `Result` of every event stays
+/// as small as the event itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReaderError {
+pub struct ReaderError(Box<ReaderErrorDetails>);
+
+impl ReaderError {
+    pub fn new(details: ReaderErrorDetails) -> Self {
+        Self(Box::new(details))
+    }
+}
+
+impl std::ops::Deref for ReaderError {
+    type Target = ReaderErrorDetails;
+
+    fn deref(&self) -> &ReaderErrorDetails {
+        &self.0
+    }
+}
+
+/// What a [`ReaderError`] holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReaderErrorDetails {
     pub kind: ReaderErrorKind,
     pub message: String,
     /// Byte offset in the input.

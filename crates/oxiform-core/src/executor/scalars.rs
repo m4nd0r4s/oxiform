@@ -124,6 +124,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 
     /// Reads number text as a float; out-of-range numbers are a type issue.
+    #[inline]
     pub(crate) fn read_float(&mut self, text: &str) -> Result<Option<f64>, Stop<S::Error>> {
         let value: f64 = text.parse().unwrap_or(f64::INFINITY);
         if value.is_finite() {
@@ -138,6 +139,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         Ok(None)
     }
 
+    #[inline]
     pub(crate) fn emit_integer(&mut self, value: Integer<'_>) -> Step<S> {
         match value {
             Integer::Small(small) => self.emit(|sink| sink.integer(small)),
@@ -145,6 +147,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
     }
 
+    #[inline]
     pub(crate) fn check_string_size(&mut self, text: &str) -> Result<(), Stop<S::Error>> {
         if text.len() > self.limits.max_str_len {
             return Err(self.limit_exceeded("max_str_len", self.limits.max_str_len, "the string"));

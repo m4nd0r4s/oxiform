@@ -6,10 +6,6 @@ mod numbers;
 mod scalars;
 mod structs;
 
-use std::borrow::Cow;
-
-use smallvec::SmallVec;
-
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
 use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
 use crate::limits::Limits;
@@ -40,11 +36,11 @@ where
     S: Sink,
 {
     let mut executor = Executor {
+        marker: std::marker::PhantomData,
         plan,
         reader,
         sink,
         limits,
-        path: SmallVec::new(),
         issues: Vec::new(),
     };
     let outcome = executor.run();
@@ -76,20 +72,12 @@ pub(crate) enum Stop<SinkError> {
 /// The value of one step, or `None` when the input did not match and the issue is recorded.
 pub(crate) type Step<S> = Result<Option<<S as Sink>::Value>, Stop<<S as Sink>::Error>>;
 
-/// One step of the path while reading. Keys stay borrowed from the input; an owned
-/// [`PathSegment`] is made only when an issue is recorded.
-#[derive(Debug, Clone)]
-pub(crate) enum PathStep<'input> {
-    Key(Cow<'input, str>),
-    Index(usize),
-}
-
 pub(crate) struct Executor<'run, 'input, R, S> {
+    marker: std::marker::PhantomData<&'input ()>,
     plan: &'run Plan,
     reader: &'run mut R,
     sink: &'run mut S,
     limits: &'run Limits,
-    path: SmallVec<[PathStep<'input>; 8]>,
     issues: Vec<Issue>,
 }
 
@@ -102,6 +90,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 
     /// Reads the value that starts with `event` as the node `node_id`.
+    #[inline]
     pub(crate) fn value(&mut self, node_id: NodeId, event: Event<'input>) -> Step<S> {
         let plan = self.plan;
         match plan.node(node_id) {
@@ -127,12 +116,14 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
     }
 
+    #[inline]
     pub(crate) fn next_event(&mut self) -> Result<Event<'input>, Stop<S::Error>> {
         self.reader
             .next_event()
             .map_err(|error| self.unreadable(error))
     }
 
+    #[inline]
     pub(crate) fn emit(
         &mut self,
         build: impl FnOnce(&mut S) -> Result<S::Value, S::Error>,
@@ -148,7 +139,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         input: Option<String>,
         context: Vec<(&'static str, ContextValue)>,
     ) -> Result<(), Stop<S::Error>> {
-        let path = self.owned_path();
+        let path = Vec::new();
         self.issues.push(Issue {
             code,
             path,
@@ -185,7 +176,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         limit: usize,
         what: &str,
     ) -> Stop<S::Error> {
-        let path = self.owned_path();
+        let path = Vec::new();
         self.issues.push(Issue {
             code: ErrorCode::LimitExceeded,
             path,
@@ -213,7 +204,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 ContextValue::Integer(i64::try_from(error.column).unwrap_or(i64::MAX)),
             ),
         ];
-        let code = match error.kind {
+        let code = match error.kind.clone() {
             ReaderErrorKind::Syntax => ErrorCode::Syntax,
             ReaderErrorKind::DepthLimit { limit } => {
                 context.push(("limit", ContextValue::Text("max_depth".into())));
@@ -228,7 +219,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             "{} (line {}, column {})",
             error.message, error.line, error.column
         );
-        let path = self.owned_path();
+        let path = Vec::new();
         self.issues.push(Issue {
             code,
             path,
@@ -239,14 +230,16 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         Stop::Unreadable
     }
 
-    fn owned_path(&self) -> Vec<PathSegment> {
-        self.path
-            .iter()
-            .map(|step| match step {
-                PathStep::Key(key) => PathSegment::Key(key.to_string()),
-                PathStep::Index(index) => PathSegment::Index(*index),
-            })
-            .collect()
+    /// Puts `segment` in front of the path of every issue recorded since `mark`. Issues are
+    /// recorded where they happen with an empty path, and each enclosing container adds its
+    /// step on the way out, so reading valid input never builds a path.
+    pub(crate) fn prefix_issues(&mut self, mark: usize, segment: impl FnOnce() -> PathSegment) {
+        if self.issues.len() > mark {
+            let segment = segment();
+            for issue in &mut self.issues[mark..] {
+                issue.path.insert(0, segment.clone());
+            }
+        }
     }
 
     /// Consumes the rest of the value that starts with `event`.

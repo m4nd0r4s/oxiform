@@ -1,6 +1,6 @@
 //! A validating pull reader that turns JSON text into events.
 
-use oxiform_core::events::{Event, EventReader, ReaderError, ReaderErrorKind};
+use oxiform_core::events::{Event, EventReader, ReaderError, ReaderErrorDetails, ReaderErrorKind};
 use smallvec::SmallVec;
 
 use super::location::line_and_column;
@@ -38,6 +38,8 @@ pub struct JsonReader<'input> {
     position: usize,
     event_offset: usize,
     containers: SmallVec<[Container; 32]>,
+    /// The innermost open container, kept apart so the common check reads one field.
+    current: Option<Container>,
     state: State,
     max_depth: usize,
 }
@@ -50,15 +52,18 @@ impl<'input> JsonReader<'input> {
             position: 0,
             event_offset: 0,
             containers: SmallVec::new(),
+            current: None,
             state: State::Value,
             max_depth,
         }
     }
 
+    #[inline(always)]
     fn bytes(&self) -> &'input [u8] {
         self.input.as_bytes()
     }
 
+    #[inline(always)]
     fn skip_whitespace(&mut self) {
         let bytes = self.bytes();
         while matches!(bytes.get(self.position), Some(b' ' | b'\n' | b'\r' | b'\t')) {
@@ -66,10 +71,12 @@ impl<'input> JsonReader<'input> {
         }
     }
 
+    #[inline(always)]
     fn peek(&self) -> Option<u8> {
         self.bytes().get(self.position).copied()
     }
 
+    #[cold]
     fn error(
         &self,
         offset: usize,
@@ -77,19 +84,20 @@ impl<'input> JsonReader<'input> {
         message: impl Into<String>,
     ) -> ReaderError {
         let (line, column) = line_and_column(self.input, offset);
-        ReaderError {
+        ReaderError::new(ReaderErrorDetails {
             kind,
             message: message.into(),
             offset,
             line,
             column,
-        }
+        })
     }
 
     fn syntax_error(&self, offset: usize, message: impl Into<String>) -> ReaderError {
         self.error(offset, ReaderErrorKind::Syntax, message)
     }
 
+    #[cold]
     fn unexpected(&self, expected: &str) -> ReaderError {
         match self.peek() {
             None => self.syntax_error(
@@ -119,16 +127,20 @@ impl<'input> JsonReader<'input> {
             ));
         }
         self.containers.push(container);
+        self.current = Some(container);
         self.position += 1;
         Ok(())
     }
 
+    #[inline(always)]
     fn close(&mut self) {
         self.containers.pop();
+        self.current = self.containers.last().copied();
         self.position += 1;
         self.state = State::AfterValue;
     }
 
+    #[inline(always)]
     fn read_value(&mut self) -> Result<Event<'input>, ReaderError> {
         self.skip_whitespace();
         self.event_offset = self.position;
@@ -178,6 +190,7 @@ impl<'input> JsonReader<'input> {
         }
     }
 
+    #[inline(always)]
     fn read_key(&mut self) -> Result<Event<'input>, ReaderError> {
         self.event_offset = self.position;
         let (key, end) = read_string(self.input, self.position)
@@ -192,10 +205,11 @@ impl<'input> JsonReader<'input> {
         Ok(Event::Key(key))
     }
 
+    #[inline(always)]
     fn after_value(&mut self) -> Result<Option<Event<'input>>, ReaderError> {
         self.skip_whitespace();
         self.event_offset = self.position;
-        match (self.containers.last(), self.peek()) {
+        match (self.current, self.peek()) {
             (None, _) => {
                 self.state = State::Done;
                 Ok(None)
@@ -225,6 +239,7 @@ impl<'input> JsonReader<'input> {
 }
 
 impl<'input> EventReader<'input> for JsonReader<'input> {
+    #[inline]
     fn next_event(&mut self) -> Result<Event<'input>, ReaderError> {
         loop {
             match self.state {
