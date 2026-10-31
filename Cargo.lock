@@ -45,6 +45,9 @@ dependencies = [
 [[package]]
 name = "oxiform-formats"
 version = "0.0.1"
+dependencies = [
+ "oxiform-core",
+]
 
 [[package]]
 name = "oxiform-py"
