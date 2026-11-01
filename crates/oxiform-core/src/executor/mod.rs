@@ -8,6 +8,7 @@ mod numbers;
 mod replay;
 mod scalars;
 mod structs;
+mod temporal;
 mod unions;
 
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
@@ -111,6 +112,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             Node::Float(checks) => self.float(checks, event),
             Node::String(checks) => self.string(checks, event),
             Node::Bytes { mutable, length } => self.bytes(*mutable, *length, event),
+            Node::Temporal(kind) => self.temporal(*kind, event),
             Node::Converted(conversion) => self.converted(*conversion, event),
             Node::List {
                 kind,

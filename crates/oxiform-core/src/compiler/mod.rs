@@ -143,6 +143,7 @@ impl Compiler<'_> {
                     length: constraints::length_only(declared, name, location)?,
                 }
             }
+            TypeDescription::Temporal(kind) => Node::Temporal(*kind),
             TypeDescription::Converted(index) => {
                 if *index >= self.description.conversions.len() {
                     return Err(declaration_error(

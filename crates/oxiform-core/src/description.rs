@@ -15,6 +15,8 @@ pub enum TypeDescription {
         mutable: bool,
         constraints: Constraints,
     },
+    /// A date, a time or a duration, read from its ISO text.
+    Temporal(TemporalKind),
     /// A value the sink builds from the string or number read (`Decimal`, `UUID`, `Path`), by
     /// its index in [`Description::conversions`].
     Converted(usize),
@@ -94,6 +96,42 @@ pub struct ChoiceDescription {
     pub values: Vec<ChoiceValue>,
     /// An `Enum`, whose failures are `enum` errors instead of `literal`.
     pub is_enum: bool,
+}
+
+/// Which time type a [`TypeDescription::Temporal`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalKind {
+    /// A `datetime` with an offset (D5).
+    DateTime,
+    /// `ox.NaiveDateTime`: a `datetime` without one.
+    NaiveDateTime,
+    Date,
+    Time,
+    /// A `timedelta`.
+    Duration,
+}
+
+impl TemporalKind {
+    /// The Python name, for messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DateTime => "datetime",
+            Self::NaiveDateTime => "ox.NaiveDateTime",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Duration => "timedelta",
+        }
+    }
+
+    /// The format reported when the text is not valid.
+    pub fn format(self) -> &'static str {
+        match self {
+            Self::DateTime | Self::NaiveDateTime => "datetime",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Duration => "duration",
+        }
+    }
 }
 
 /// A type the sink builds from a string or a number, rejecting values it cannot convert.

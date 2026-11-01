@@ -9,6 +9,7 @@ use oxiform_core::issues::{Issue, Report};
 use oxiform_core::limits::Limits;
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
+use oxiform_core::temporal::Temporal;
 use oxiform_formats::json::JsonReader;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +21,7 @@ pub enum Value {
     Float(f64),
     String(String),
     Bytes(Vec<u8>, bool),
+    Temporal(Temporal),
     /// A conversion index and the raw value it was built from.
     Converted(usize, Box<Value>),
     List(Vec<Value>),
@@ -60,6 +62,9 @@ impl Sink for ValueSink {
     }
     fn bytes(&mut self, value: &[u8], mutable: bool) -> Result<Value, Infallible> {
         Ok(Value::Bytes(value.to_vec(), mutable))
+    }
+    fn temporal(&mut self, value: Temporal) -> Result<Value, Infallible> {
+        Ok(Value::Temporal(value))
     }
     /// Rejects the raw string "bad" and the integer 0, so tests can reach the issue.
     fn convert(

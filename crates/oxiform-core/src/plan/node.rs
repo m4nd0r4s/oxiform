@@ -4,7 +4,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 
 use super::{ChoiceId, ConversionId, NodeId, StructId};
-use crate::description::{Bound, ChoiceValue, SequenceKind, TagMode};
+use crate::description::{Bound, ChoiceValue, SequenceKind, TagMode, TemporalKind};
 
 /// One step of a plan.
 #[derive(Debug)]
@@ -19,6 +19,7 @@ pub enum Node {
         mutable: bool,
         length: LengthRange,
     },
+    Temporal(TemporalKind),
     Converted(ConversionId),
     List {
         kind: SequenceKind,

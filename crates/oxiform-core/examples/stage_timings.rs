@@ -54,6 +54,9 @@ impl Sink for NullSink {
     fn choice(&mut self, _: ChoiceId, _: u32) -> Result<(), ()> {
         Ok(())
     }
+    fn temporal(&mut self, _: oxiform_core::temporal::Temporal) -> Result<(), ()> {
+        Ok(())
+    }
     fn convert(&mut self, _: ConversionId, _: ()) -> Result<Option<()>, ()> {
         Ok(Some(()))
     }

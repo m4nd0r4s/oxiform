@@ -2,6 +2,7 @@
 //! plain Rust values.
 
 use crate::plan::{ChoiceId, ConversionId, StructId};
+use crate::temporal::Temporal;
 
 /// Builds the values the executor validated.
 pub trait Sink {
@@ -24,6 +25,7 @@ pub trait Sink {
     fn set(&mut self, items: Vec<Self::Value>, frozen: bool) -> Result<Self::Value, Self::Error>;
     /// The value at `index` of a set of choices.
     fn choice(&mut self, choice: ChoiceId, index: u32) -> Result<Self::Value, Self::Error>;
+    fn temporal(&mut self, value: Temporal) -> Result<Self::Value, Self::Error>;
     /// The value of a conversion built from `raw`, the string or integer read, or `None` when
     /// the conversion rejects it.
     fn convert(

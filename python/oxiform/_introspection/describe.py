@@ -1,6 +1,7 @@
 """Builds the description of a type by walking its annotations."""
 
 import dataclasses
+import datetime
 import enum
 import types
 import typing
@@ -20,10 +21,12 @@ from oxiform._introspection.model import (
     Layout,
     Member,
     StructDescription,
+    TemporalKind,
     TypeDescription,
 )
 from oxiform._introspection.unions import UnionMode, is_union, union_mode, without_none
 from oxiform._model_options import model_options
+from oxiform._naive import NAIVE
 from oxiform.errors import SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
@@ -66,7 +69,13 @@ class _DescriptionBuilder:
     def type_of(
         self, annotation: object, location: str, outer: ConstraintValues
     ) -> TypeDescription:
-        annotation, constraints, mode = _unwrap_annotated(annotation, location, outer)
+        annotation, constraints, mode, naive = _unwrap_annotated(annotation, location, outer)
+        if naive:
+            if annotation is not datetime.datetime:
+                raise SchemaError(f"{location}: ox.NaiveDateTime applies to datetime only")
+            return self._without_constraints(
+                ("temporal", "naive_datetime"), "ox.NaiveDateTime", constraints, location
+            )
         if mode is not None:
             return self._marked_union(annotation, mode, location, constraints)
         if annotation is Any:
@@ -83,6 +92,9 @@ class _DescriptionBuilder:
             return ("str", constraints)
         if annotation is bytes or annotation is bytearray:
             return ("bytes", annotation is bytearray, constraints)
+        if annotation in _TEMPORAL:
+            kind = _TEMPORAL[annotation]
+            return self._without_constraints(("temporal", kind), kind, constraints, location)
         conversion = conversion_of(annotation)
         if conversion is None and _is_flag(annotation):
             conversion = flag_conversion(annotation)
@@ -273,6 +285,13 @@ def _is_flag(annotation: object) -> TypeGuard[type[enum.Flag]]:
     return isinstance(annotation, type) and issubclass(annotation, enum.Flag)
 
 
+_TEMPORAL: dict[object, TemporalKind] = {
+    datetime.datetime: "datetime",
+    datetime.date: "date",
+    datetime.time: "time",
+    datetime.timedelta: "timedelta",
+}
+
 _BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
     tuple: "tuple",
     set: "set",
@@ -309,13 +328,15 @@ def _flattened_class(annotation: object, location: str) -> type:
 
 def _unwrap_annotated(
     annotation: object, location: str, outer: ConstraintValues
-) -> tuple[object, ConstraintValues, UnionMode | None]:
-    """The annotated type, its constraints merged with those of enclosing ``Annotated``, and how
-    it is told apart when it is a union."""
+) -> tuple[object, ConstraintValues, UnionMode | None, bool]:
+    """The annotated type, its constraints merged with those of enclosing ``Annotated``, how it
+    is told apart when it is a union, and whether it is marked as ``ox.NaiveDateTime``."""
     constraints = dict(outer)
     mode: UnionMode | None = None
+    naive = False
     while typing.get_origin(annotation) is Annotated:
         annotation, *metadata = typing.get_args(annotation)
+        naive = naive or any(item is NAIVE for item in metadata)
         found = union_mode(metadata, location)
         if found is not None:
             if mode is not None:
@@ -325,4 +346,4 @@ def _unwrap_annotated(
             if key in constraints:
                 raise SchemaError(f"{location}: the same constraint is declared twice")
             constraints[key] = value
-    return annotation, constraints, mode
+    return annotation, constraints, mode, naive
