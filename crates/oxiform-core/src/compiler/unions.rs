@@ -49,7 +49,9 @@ impl Compiler<'_> {
                 TypeDescription::Bool => vec![Kind::Bool],
                 TypeDescription::Integer(_) => vec![Kind::Integer],
                 TypeDescription::Float(_) => vec![Kind::Float],
-                TypeDescription::String(_) | TypeDescription::Bytes { .. } => vec![Kind::String],
+                TypeDescription::String(_)
+                | TypeDescription::Bytes { .. }
+                | TypeDescription::Temporal(_) => vec![Kind::String],
                 TypeDescription::Converted(index) => self.conversion_kinds(*index),
                 TypeDescription::List { .. }
                 | TypeDescription::Collection { .. }
@@ -287,6 +289,7 @@ fn type_name(description: &TypeDescription, whole: &Description) -> String {
         TypeDescription::String(_) => "str".into(),
         TypeDescription::Bytes { mutable: false, .. } => "bytes".into(),
         TypeDescription::Bytes { mutable: true, .. } => "bytearray".into(),
+        TypeDescription::Temporal(kind) => kind.name().into(),
         TypeDescription::Converted(index) => whole
             .conversions
             .get(*index)

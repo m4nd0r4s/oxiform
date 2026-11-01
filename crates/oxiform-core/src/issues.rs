@@ -22,6 +22,7 @@ pub enum ErrorCode {
     Enum,
     Union,
     Tag,
+    Timezone,
     LimitExceeded,
 }
 
@@ -43,6 +44,7 @@ impl ErrorCode {
             Self::Enum => "enum",
             Self::Union => "union",
             Self::Tag => "tag",
+            Self::Timezone => "timezone",
             Self::LimitExceeded => "limit_exceeded",
         }
     }
