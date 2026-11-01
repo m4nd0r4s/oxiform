@@ -107,7 +107,6 @@ def test_writes_sets_sorted_when_possible() -> None:
         (set[list[int]], "root: set items must be hashable"),
         (Annotated[tuple[int, int], ox.Len(2)], "root: constraints do not apply to a fixed tuple"),
         (Literal["a"] | str, "root: Literal['a'] and str are both read from a string"),
-        (enum.Flag("Perm", "R W"), "root: Flag enums are not supported yet"),
     ],
 )
 def test_rejects_declarations_it_cannot_read(target: Any, message: str) -> None:

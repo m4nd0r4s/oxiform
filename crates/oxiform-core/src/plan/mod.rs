@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 
 pub use node::{ChoicePlan, LengthRange, Node, NumberChecks, StringChecks, TaggedPlan, UnionPlan};
 
-use crate::description::UnknownFields;
+use crate::description::{ConversionDescription, UnknownFields};
 
 /// The index of a node in its plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,12 +33,23 @@ impl ChoiceId {
     }
 }
 
+/// The index of a conversion in its plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConversionId(pub(crate) u32);
+
+impl ConversionId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A compiled type.
 #[derive(Debug)]
 pub struct Plan {
     pub(crate) nodes: Vec<Node>,
     pub(crate) structs: Vec<StructPlan>,
     pub(crate) choices: Vec<ChoicePlan>,
+    pub(crate) conversions: Vec<ConversionDescription>,
     pub(crate) root: NodeId,
 }
 
@@ -61,6 +72,10 @@ impl Plan {
 
     pub fn choice_plan(&self, id: ChoiceId) -> &ChoicePlan {
         &self.choices[id.index()]
+    }
+
+    pub fn conversion(&self, id: ConversionId) -> &ConversionDescription {
+        &self.conversions[id.index()]
     }
 }
 

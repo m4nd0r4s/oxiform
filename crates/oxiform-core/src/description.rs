@@ -10,6 +10,14 @@ pub enum TypeDescription {
     Integer(Constraints),
     Float(Constraints),
     String(Constraints),
+    /// `bytes`, or `bytearray` when `mutable`, read from base64 text.
+    Bytes {
+        mutable: bool,
+        constraints: Constraints,
+    },
+    /// A value the sink builds from the string or number read (`Decimal`, `UUID`, `Path`), by
+    /// its index in [`Description::conversions`].
+    Converted(usize),
     List {
         items: Box<TypeDescription>,
         constraints: Constraints,
@@ -86,6 +94,26 @@ pub struct ChoiceDescription {
     pub values: Vec<ChoiceValue>,
     /// An `Enum`, whose failures are `enum` errors instead of `literal`.
     pub is_enum: bool,
+}
+
+/// A type the sink builds from a string or a number, rejecting values it cannot convert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionDescription {
+    /// The type as written in Python, for messages: `UUID`, `IPv4Address`.
+    pub name: String,
+    /// The format reported when a value is rejected: `uuid`, `ipv4_address`.
+    pub format: String,
+    pub input: ConversionInput,
+}
+
+/// What a conversion reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionInput {
+    String,
+    /// An integer. A rejected value is an `enum` issue: this is how `Flag` is read.
+    Integer,
+    /// A number, or a string holding one, handed to the sink as text so no precision is lost.
+    Decimal,
 }
 
 /// Where the tag of a tagged union is in the input.
@@ -177,4 +205,5 @@ pub struct Description {
     pub root: TypeDescription,
     pub structs: Vec<StructDescription>,
     pub choices: Vec<ChoiceDescription>,
+    pub conversions: Vec<ConversionDescription>,
 }

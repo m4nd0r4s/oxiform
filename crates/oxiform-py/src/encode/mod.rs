@@ -7,6 +7,9 @@ pub(crate) mod json;
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+
 use oxiform_core::issues::PathSegment;
 use oxiform_core::writer::{EventWriter, WriteError};
 use pyo3::exceptions::PyTypeError;
@@ -14,7 +17,8 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{
-    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString,
+    PyTuple, PyType,
 };
 
 use crate::python_objects::encode_error;
@@ -125,7 +129,8 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
         Ok(())
     }
 
-    /// Subclasses of builtins (`IntEnum`, `StrEnum`), tuples, booleans and dataclasses.
+    /// Subclasses of builtins (`IntEnum`, `StrEnum`), tuples, booleans, dataclasses, and the
+    /// types written as text.
     fn other(&mut self, object: &Bound<'_, PyAny>) -> Result<(), EncodeFailure> {
         if let Ok(flag) = object.cast::<PyBool>() {
             self.writer.bool(flag.is_true());
@@ -147,6 +152,14 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             self.set(object)?;
         } else if object.is_instance(enum_type(object.py())?)? {
             self.value(&object.getattr(intern!(object.py(), "value"))?)?;
+        } else if let Ok(bytes) = object.cast::<PyBytes>() {
+            self.writer.string(&STANDARD.encode(bytes.as_bytes()));
+        } else if let Ok(bytes) = object.cast::<PyByteArray>() {
+            self.writer.string(&STANDARD.encode(bytes.to_vec()));
+        } else if object.is_instance(text_types(object.py())?)? {
+            self.writer.string(object.str()?.to_str()?);
+        } else if object.is_instance(zone_info_type(object.py())?)? {
+            self.zone_info(object)?;
         } else {
             let type_name = object.get_type().qualname()?;
             return Err(EncodeFailure::Unsupported {
@@ -169,6 +182,20 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             Err(error) => return Err(error.into()),
         };
         self.sequence(items.len(), items.iter())
+    }
+
+    /// A time zone, by its key. A zone read from a file has none.
+    fn zone_info(&mut self, zone: &Bound<'_, PyAny>) -> Result<(), EncodeFailure> {
+        let key = zone.getattr(intern!(zone.py(), "key"))?;
+        if key.is_none() {
+            return Err(EncodeFailure::Unsupported {
+                message: "cannot encode a ZoneInfo without a key".into(),
+                path: Vec::new(),
+            });
+        }
+        self.writer
+            .string(key.cast::<PyString>().map_err(PyErr::from)?.to_str()?);
+        Ok(())
     }
 
     fn integer(&mut self, integer: &Bound<'_, PyInt>) -> Result<(), EncodeFailure> {
@@ -323,9 +350,20 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
 
 static ENUM: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static SORTED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+static TEXT_TYPES: PyOnceLock<Py<PyTuple>> = PyOnceLock::new();
+static ZONE_INFO: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 
 fn enum_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     ENUM.import(py, "enum", "Enum")
+}
+
+/// The types written as `str(value)`: `Decimal`, `UUID`, paths and IP addresses.
+fn text_types(py: Python<'_>) -> PyResult<&Bound<'_, PyTuple>> {
+    TEXT_TYPES.import(py, "oxiform._introspection.conversions", "TEXT_TYPES")
+}
+
+fn zone_info_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    ZONE_INFO.import(py, "zoneinfo", "ZoneInfo")
 }
 
 fn sorted(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {

@@ -12,6 +12,7 @@ name = "_oxiform"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64.workspace = true
 oxiform-core.workspace = true
 oxiform-formats.workspace = true
 pyo3.workspace = true

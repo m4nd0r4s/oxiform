@@ -3,7 +3,7 @@
 use regex::Regex;
 use rustc_hash::FxHashMap;
 
-use super::{ChoiceId, NodeId, StructId};
+use super::{ChoiceId, ConversionId, NodeId, StructId};
 use crate::description::{Bound, ChoiceValue, SequenceKind, TagMode};
 
 /// One step of a plan.
@@ -15,6 +15,11 @@ pub enum Node {
     Integer(NumberChecks),
     Float(NumberChecks),
     String(StringChecks),
+    Bytes {
+        mutable: bool,
+        length: LengthRange,
+    },
+    Converted(ConversionId),
     List {
         kind: SequenceKind,
         items: NodeId,

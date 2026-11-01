@@ -26,6 +26,7 @@ fn user() -> Description {
             ],
         )],
         choices: Vec::new(),
+        conversions: Vec::new(),
     }
 }
 

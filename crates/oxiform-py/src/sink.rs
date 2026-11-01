@@ -1,9 +1,13 @@
 //! Builds Python objects from validated values.
 
-use oxiform_core::plan::{ChoiceId, StructId};
+use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple};
+use pyo3::types::{
+    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString,
+    PyTuple,
+};
 use pyo3::{ffi, intern};
 
 use crate::compiled::CompiledType;
@@ -41,6 +45,34 @@ impl<'py> Sink for PythonSink<'_, 'py> {
 
     fn string(&mut self, value: &str) -> PyResult<Self::Value> {
         new_string(self.py, value)
+    }
+
+    fn bytes(&mut self, value: &[u8], mutable: bool) -> PyResult<Self::Value> {
+        if mutable {
+            Ok(PyByteArray::new(self.py, value).into_any())
+        } else {
+            Ok(PyBytes::new(self.py, value).into_any())
+        }
+    }
+
+    /// Calls the conversion with `raw`. `ValueError` and `KeyError` (which `ZoneInfo` raises
+    /// for an unknown zone) reject the value; any other exception propagates.
+    fn convert(
+        &mut self,
+        conversion: ConversionId,
+        raw: Self::Value,
+    ) -> PyResult<Option<Self::Value>> {
+        let convert = self.compiled.runtime.conversions[conversion.index()].bind(self.py);
+        match convert.call1((raw,)) {
+            Ok(value) => Ok(Some(value)),
+            Err(error)
+                if error.is_instance_of::<PyValueError>(self.py)
+                    || error.is_instance_of::<PyKeyError>(self.py) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn list(&mut self, items: Vec<Self::Value>) -> PyResult<Self::Value> {

@@ -2,9 +2,9 @@
 //! what the sink needs to create instances.
 
 use oxiform_core::description::{
-    Bound as NumericBound, ChoiceDescription, ChoiceValue, Constraints, Description,
-    FieldDescription, Literal, SequenceKind, StructDescription, TagMode, TypeDescription,
-    UnknownFields,
+    Bound as NumericBound, ChoiceDescription, ChoiceValue, Constraints, ConversionDescription,
+    ConversionInput, Description, FieldDescription, Literal, SequenceKind, StructDescription,
+    TagMode, TypeDescription, UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -56,11 +56,12 @@ pub(crate) struct StructRuntime {
     pub(crate) defaults: Vec<FieldDefault>,
 }
 
-/// What the sink needs besides the plan: how to create instances of each structure, and the
-/// Python object of each value of each set of choices.
+/// What the sink needs besides the plan: how to create instances of each structure, the
+/// Python object of each value of each set of choices, and the callable of each conversion.
 pub(crate) struct Runtime {
     pub(crate) structs: Vec<StructRuntime>,
     pub(crate) choices: Vec<Vec<Py<PyAny>>>,
+    pub(crate) conversions: Vec<Py<PyAny>>,
 }
 
 /// Converts a Python `Description`.
@@ -70,6 +71,7 @@ pub(crate) fn read_description(description: &Bound<'_, PyAny>) -> PyResult<(Desc
     let mut runtime = Runtime {
         structs: Vec::new(),
         choices: Vec::new(),
+        conversions: Vec::new(),
     };
     for struct_description in description.getattr("structs")?.try_iter()? {
         let (struct_description, struct_runtime) = read_struct(&struct_description?)?;
@@ -91,11 +93,29 @@ pub(crate) fn read_description(description: &Bound<'_, PyAny>) -> PyResult<(Desc
         });
         runtime.choices.push(choice.getattr("objects")?.extract()?);
     }
+    let mut conversions = Vec::new();
+    for conversion in description.getattr("conversions")?.try_iter()? {
+        let conversion = conversion?;
+        let input = match conversion.getattr("input")?.extract::<String>()?.as_str() {
+            "int" => ConversionInput::Integer,
+            "decimal" => ConversionInput::Decimal,
+            _ => ConversionInput::String,
+        };
+        conversions.push(ConversionDescription {
+            name: conversion.getattr("name")?.extract()?,
+            format: conversion.getattr("format")?.extract()?,
+            input,
+        });
+        runtime
+            .conversions
+            .push(conversion.getattr("convert")?.unbind());
+    }
     Ok((
         Description {
             root,
             structs,
             choices,
+            conversions,
         },
         runtime,
     ))
@@ -210,6 +230,11 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<TypeDescription> {
         "int" => TypeDescription::Integer(read_constraints(&parts.get_item(1)?)?),
         "float" => TypeDescription::Float(read_constraints(&parts.get_item(1)?)?),
         "str" => TypeDescription::String(read_constraints(&parts.get_item(1)?)?),
+        "bytes" => TypeDescription::Bytes {
+            mutable: parts.get_item(1)?.extract()?,
+            constraints: read_constraints(&parts.get_item(2)?)?,
+        },
+        "converted" => TypeDescription::Converted(parts.get_item(1)?.extract()?),
         "list" => TypeDescription::List {
             items: Box::new(read_type(&parts.get_item(1)?)?),
             constraints: read_constraints(&parts.get_item(2)?)?,
