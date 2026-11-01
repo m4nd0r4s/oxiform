@@ -13,6 +13,7 @@ fn literal(values: Vec<ChoiceValue>, is_enum: bool) -> Description {
             values,
             is_enum,
         }],
+        conversions: Vec::new(),
     }
 }
 

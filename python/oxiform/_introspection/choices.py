@@ -22,8 +22,6 @@ def literal_choice(annotation: object, location: str) -> ChoiceDescription:
 
 def enum_choice(cls: type[enum.Enum], location: str) -> ChoiceDescription:
     """The choice of an ``Enum``: its members, read from their values."""
-    if issubclass(cls, enum.Flag):
-        raise SchemaError(f"{location}: Flag enums are not supported yet")
     members = tuple(cls)
     values = tuple(_wire_value(member, location) for member in members)
     return ChoiceDescription(name=cls.__qualname__, values=values, objects=members, is_enum=True)

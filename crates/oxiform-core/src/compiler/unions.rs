@@ -3,7 +3,7 @@
 use rustc_hash::FxHashMap;
 
 use super::{Compiler, DeclarationError, declaration_error};
-use crate::description::{ChoiceValue, Description, TagMode, TypeDescription};
+use crate::description::{ChoiceValue, ConversionInput, Description, TagMode, TypeDescription};
 use crate::plan::{Node, NodeId, StructId, TaggedPlan, UnionPlan};
 
 /// The kinds of value a union tells apart, with the Python name used in messages.
@@ -49,7 +49,8 @@ impl Compiler<'_> {
                 TypeDescription::Bool => vec![Kind::Bool],
                 TypeDescription::Integer(_) => vec![Kind::Integer],
                 TypeDescription::Float(_) => vec![Kind::Float],
-                TypeDescription::String(_) => vec![Kind::String],
+                TypeDescription::String(_) | TypeDescription::Bytes { .. } => vec![Kind::String],
+                TypeDescription::Converted(index) => self.conversion_kinds(*index),
                 TypeDescription::List { .. }
                 | TypeDescription::Collection { .. }
                 | TypeDescription::Tuple(_) => vec![Kind::Sequence],
@@ -120,6 +121,16 @@ impl Compiler<'_> {
             }
         }
         kinds
+    }
+
+    /// The kinds of value a conversion is read from.
+    fn conversion_kinds(&self, index: usize) -> Vec<Kind> {
+        match self.description.conversions.get(index).map(|c| c.input) {
+            Some(ConversionInput::String) => vec![Kind::String],
+            Some(ConversionInput::Integer) => vec![Kind::Integer],
+            Some(ConversionInput::Decimal) => vec![Kind::Integer, Kind::Float, Kind::String],
+            None => Vec::new(),
+        }
     }
 
     /// The variant read from a map. Several structures that declare the same tag field are
@@ -274,6 +285,12 @@ fn type_name(description: &TypeDescription, whole: &Description) -> String {
         TypeDescription::Integer(_) => "int".into(),
         TypeDescription::Float(_) => "float".into(),
         TypeDescription::String(_) => "str".into(),
+        TypeDescription::Bytes { mutable: false, .. } => "bytes".into(),
+        TypeDescription::Bytes { mutable: true, .. } => "bytearray".into(),
+        TypeDescription::Converted(index) => whole
+            .conversions
+            .get(*index)
+            .map_or_else(|| format!("conversion {index}"), |c| c.name.clone()),
         TypeDescription::List { .. } => "list".into(),
         TypeDescription::Collection { kind, .. } => kind.name().into(),
         TypeDescription::Tuple(_) => "tuple".into(),

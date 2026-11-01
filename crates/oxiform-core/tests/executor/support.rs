@@ -7,7 +7,7 @@ use oxiform_core::description::{
 use oxiform_core::executor::{Failure, execute};
 use oxiform_core::issues::{Issue, Report};
 use oxiform_core::limits::Limits;
-use oxiform_core::plan::{ChoiceId, StructId};
+use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_formats::json::JsonReader;
 
@@ -19,6 +19,9 @@ pub enum Value {
     BigInteger(String),
     Float(f64),
     String(String),
+    Bytes(Vec<u8>, bool),
+    /// A conversion index and the raw value it was built from.
+    Converted(usize, Box<Value>),
     List(Vec<Value>),
     Dict(Vec<(Value, Value)>),
     Tuple(Vec<Value>),
@@ -54,6 +57,20 @@ impl Sink for ValueSink {
     }
     fn string(&mut self, value: &str) -> Result<Value, Infallible> {
         Ok(Value::String(value.into()))
+    }
+    fn bytes(&mut self, value: &[u8], mutable: bool) -> Result<Value, Infallible> {
+        Ok(Value::Bytes(value.to_vec(), mutable))
+    }
+    /// Rejects the raw string "bad" and the integer 0, so tests can reach the issue.
+    fn convert(
+        &mut self,
+        conversion: ConversionId,
+        raw: Value,
+    ) -> Result<Option<Value>, Infallible> {
+        if matches!(&raw, Value::String(text) if text == "bad") || raw == Value::Integer(0) {
+            return Ok(None);
+        }
+        Ok(Some(Value::Converted(conversion.index(), Box::new(raw))))
     }
     fn list(&mut self, items: Vec<Value>) -> Result<Value, Infallible> {
         Ok(Value::List(items))
@@ -103,6 +120,7 @@ pub fn plain(root: TypeDescription) -> Description {
         root,
         structs: Vec::new(),
         choices: Vec::new(),
+        conversions: Vec::new(),
     }
 }
 

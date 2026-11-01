@@ -9,10 +9,12 @@ from typing import Annotated, Any, Literal, TypeGuard
 
 from oxiform._introspection.choices import enum_choice, literal_choice
 from oxiform._introspection.constraints import collect_constraints
+from oxiform._introspection.conversions import conversion_of, flag_conversion
 from oxiform._introspection.fields import checked_options, default_of, tag_of, wire_name
 from oxiform._introspection.model import (
     ChoiceDescription,
     ConstraintValues,
+    ConversionDescription,
     Description,
     FieldDescription,
     Layout,
@@ -39,7 +41,12 @@ def describe(target: object) -> Description:
     """
     builder = _DescriptionBuilder()
     root = builder.type_of(target, "root", {})
-    return Description(root, tuple(builder.finished_structs()), tuple(builder.choices))
+    return Description(
+        root,
+        tuple(builder.finished_structs()),
+        tuple(builder.choices),
+        tuple(builder.conversions),
+    )
 
 
 class _DescriptionBuilder:
@@ -48,6 +55,8 @@ class _DescriptionBuilder:
         self._indices: dict[type, int] = {}
         self.choices: list[ChoiceDescription] = []
         self._choice_indices: dict[object, int] = {}
+        self.conversions: list[ConversionDescription] = []
+        self._conversion_indices: dict[object, int] = {}
 
     def finished_structs(self) -> list[StructDescription]:
         finished = [struct for struct in self._structs if struct is not None]
@@ -72,6 +81,16 @@ class _DescriptionBuilder:
             return ("float", constraints)
         if annotation is str:
             return ("str", constraints)
+        if annotation is bytes or annotation is bytearray:
+            return ("bytes", annotation is bytearray, constraints)
+        conversion = conversion_of(annotation)
+        if conversion is None and _is_flag(annotation):
+            conversion = flag_conversion(annotation)
+        if conversion is not None:
+            index = self._conversion_index(annotation, conversion)
+            return self._without_constraints(
+                ("converted", index), conversion.name, constraints, location
+            )
         if annotation is list:
             return ("list", ("any",), constraints)
         if annotation in _BARE_COLLECTIONS:
@@ -169,6 +188,12 @@ class _DescriptionBuilder:
             self.choices.append(build())
         return self._choice_indices[key]
 
+    def _conversion_index(self, key: object, conversion: ConversionDescription) -> int:
+        if key not in self._conversion_indices:
+            self._conversion_indices[key] = len(self.conversions)
+            self.conversions.append(conversion)
+        return self._conversion_indices[key]
+
     def _without_constraints(
         self,
         description: TypeDescription,
@@ -244,6 +269,10 @@ def _is_enum(annotation: object) -> TypeGuard[type[enum.Enum]]:
     return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
 
 
+def _is_flag(annotation: object) -> TypeGuard[type[enum.Flag]]:
+    return isinstance(annotation, type) and issubclass(annotation, enum.Flag)
+
+
 _BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
     tuple: "tuple",
     set: "set",
@@ -254,7 +283,7 @@ _BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
 def _hashable(description: TypeDescription) -> bool:
     """Whether values read as ``description`` can be set items: lists, dicts and sets cannot."""
     match description:
-        case ("list" | "dict", *_):
+        case ("list" | "dict", *_) | ("bytes", True, _):
             return False
         case ("collection", kind, *_):
             return kind in ("tuple", "frozenset")

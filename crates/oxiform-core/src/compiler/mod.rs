@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::description::{Description, SequenceKind, StructDescription, TypeDescription};
-use crate::plan::{ChoiceId, FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
+use crate::plan::{ChoiceId, ConversionId, FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
 
 /// A declaration that cannot be compiled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +55,7 @@ pub fn compile(description: &Description) -> Result<Plan, DeclarationError> {
         nodes: compiler.nodes,
         structs,
         choices,
+        conversions: description.conversions.clone(),
         root,
     })
 }
@@ -131,6 +132,27 @@ impl Compiler<'_> {
             }
             TypeDescription::String(declared) => {
                 Node::String(constraints::string_checks(declared, location)?)
+            }
+            TypeDescription::Bytes {
+                mutable,
+                constraints: declared,
+            } => {
+                let name = if *mutable { "bytearray" } else { "bytes" };
+                Node::Bytes {
+                    mutable: *mutable,
+                    length: constraints::length_only(declared, name, location)?,
+                }
+            }
+            TypeDescription::Converted(index) => {
+                if *index >= self.description.conversions.len() {
+                    return Err(declaration_error(
+                        location,
+                        format!("unknown conversion index {index}"),
+                    ));
+                }
+                Node::Converted(ConversionId(
+                    u32::try_from(*index).expect("fewer than 2^32 conversions"),
+                ))
             }
             TypeDescription::List {
                 items,

@@ -3,6 +3,7 @@
 
 mod choices;
 mod collections;
+mod conversions;
 mod numbers;
 mod replay;
 mod scalars;
@@ -109,6 +110,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             Node::Integer(checks) => self.integer(checks, event),
             Node::Float(checks) => self.float(checks, event),
             Node::String(checks) => self.string(checks, event),
+            Node::Bytes { mutable, length } => self.bytes(*mutable, *length, event),
+            Node::Converted(conversion) => self.converted(*conversion, event),
             Node::List {
                 kind,
                 items,

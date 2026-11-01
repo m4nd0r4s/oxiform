@@ -5,6 +5,8 @@ lookups:
 
 - ``("any",)``, ``("bool",)``, ``("none",)``
 - ``("int", constraints)``, ``("float", constraints)``, ``("str", constraints)``
+- ``("bytes", mutable, constraints)``: ``bytes``, or ``bytearray`` when ``mutable``
+- ``("converted", index)``, an index into ``Description.conversions``
 - ``("list", items, constraints)``, ``("dict", values, constraints)``
 - ``("collection", kind, items, constraints)``: a ``"tuple"`` of any length, a ``"set"`` or a
   ``"frozenset"``
@@ -20,11 +22,12 @@ lookups:
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 __all__ = [
     "ChoiceDescription",
     "ConstraintValues",
+    "ConversionDescription",
     "Default",
     "Description",
     "FieldDescription",
@@ -41,6 +44,8 @@ ConstraintValues: TypeAlias = dict[str, object]
 TypeDescription: TypeAlias = (
     tuple[Literal["any", "bool", "none"]]
     | tuple[Literal["int", "float", "str"], ConstraintValues]
+    | tuple[Literal["bytes"], bool, ConstraintValues]
+    | tuple[Literal["converted"], int]
     | tuple[Literal["list", "dict"], "TypeDescription", ConstraintValues]
     | tuple[
         Literal["collection"],
@@ -126,7 +131,21 @@ class ChoiceDescription:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversionDescription:
+    """A type built by calling ``convert`` with the string or number read. ``ValueError`` or
+    ``KeyError`` from the call rejects the value."""
+
+    name: str
+    format: str
+    """The format reported when a value is rejected."""
+    input: Literal["str", "int", "decimal"]
+    """What is read: a string, an integer, or a number (or a string holding one) as text."""
+    convert: Callable[[Any], object]
+
+
+@dataclass(frozen=True, slots=True)
 class Description:
     root: TypeDescription
     structs: tuple[StructDescription, ...]
     choices: tuple[ChoiceDescription, ...]
+    conversions: tuple[ConversionDescription, ...]
