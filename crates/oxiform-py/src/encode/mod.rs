@@ -3,6 +3,7 @@
 mod fields;
 mod hints;
 pub(crate) mod json;
+mod temporal;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -152,6 +153,10 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             self.set(object)?;
         } else if object.is_instance(enum_type(object.py())?)? {
             self.value(&object.getattr(intern!(object.py(), "value"))?)?;
+        } else if let Some(value) = temporal::temporal_of(object)? {
+            let mut text = String::with_capacity(32);
+            value.write_iso(&mut text);
+            self.writer.string(&text);
         } else if let Ok(bytes) = object.cast::<PyBytes>() {
             self.writer.string(&STANDARD.encode(bytes.as_bytes()));
         } else if let Ok(bytes) = object.cast::<PyByteArray>() {

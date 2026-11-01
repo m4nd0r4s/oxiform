@@ -4,7 +4,7 @@
 use oxiform_core::description::{
     Bound as NumericBound, ChoiceDescription, ChoiceValue, Constraints, ConversionDescription,
     ConversionInput, Description, FieldDescription, Literal, SequenceKind, StructDescription,
-    TagMode, TypeDescription, UnknownFields,
+    TagMode, TemporalKind, TypeDescription, UnknownFields,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -234,6 +234,15 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<TypeDescription> {
             mutable: parts.get_item(1)?.extract()?,
             constraints: read_constraints(&parts.get_item(2)?)?,
         },
+        "temporal" => {
+            TypeDescription::Temporal(match parts.get_item(1)?.extract::<String>()?.as_str() {
+                "datetime" => TemporalKind::DateTime,
+                "naive_datetime" => TemporalKind::NaiveDateTime,
+                "date" => TemporalKind::Date,
+                "time" => TemporalKind::Time,
+                _ => TemporalKind::Duration,
+            })
+        }
         "converted" => TypeDescription::Converted(parts.get_item(1)?.extract()?),
         "list" => TypeDescription::List {
             items: Box::new(read_type(&parts.get_item(1)?)?),

@@ -2,11 +2,12 @@
 
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
+use oxiform_core::temporal::Temporal;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{
-    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString,
-    PyTuple,
+    PyBool, PyByteArray, PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
+    PyList, PySet, PyString, PyTime, PyTuple, PyTzInfo,
 };
 use pyo3::{ffi, intern};
 
@@ -53,6 +54,44 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         } else {
             Ok(PyBytes::new(self.py, value).into_any())
         }
+    }
+
+    fn temporal(&mut self, value: Temporal) -> PyResult<Self::Value> {
+        let py = self.py;
+        Ok(match value {
+            Temporal::DateTime(date, time) => PyDateTime::new(
+                py,
+                i32::from(date.year),
+                date.month,
+                date.day,
+                time.hour,
+                time.minute,
+                time.second,
+                time.microsecond,
+                time_zone(py, time.offset)?.as_ref(),
+            )?
+            .into_any(),
+            Temporal::Date(date) => {
+                PyDate::new(py, i32::from(date.year), date.month, date.day)?.into_any()
+            }
+            Temporal::Time(time) => PyTime::new(
+                py,
+                time.hour,
+                time.minute,
+                time.second,
+                time.microsecond,
+                time_zone(py, time.offset)?.as_ref(),
+            )?
+            .into_any(),
+            Temporal::Duration(duration) => PyDelta::new(
+                py,
+                duration.days,
+                duration.seconds,
+                duration.microseconds,
+                false,
+            )?
+            .into_any(),
+        })
     }
 
     /// Calls the conversion with `raw`. `ValueError` and `KeyError` (which `ZoneInfo` raises
@@ -117,6 +156,18 @@ impl<'py> Sink for PythonSink<'_, 'py> {
     ) -> PyResult<Self::Value> {
         let runtime = &self.compiled.runtime.structs[structure.index()];
         build(self.py, &runtime.layout, &runtime.defaults, fields)
+    }
+}
+
+/// `timezone.utc` for a zero offset, a fixed `timezone` for any other, `None` for none.
+fn time_zone(py: Python<'_>, offset: Option<i32>) -> PyResult<Option<Bound<'_, PyTzInfo>>> {
+    match offset {
+        None => Ok(None),
+        Some(0) => Ok(Some(PyTzInfo::utc(py)?.to_owned())),
+        Some(seconds) => {
+            let delta = PyDelta::new(py, 0, seconds, 0, true)?;
+            Ok(Some(PyTzInfo::fixed_offset(py, delta)?))
+        }
     }
 }
 

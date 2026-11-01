@@ -6,6 +6,8 @@ lookups:
 - ``("any",)``, ``("bool",)``, ``("none",)``
 - ``("int", constraints)``, ``("float", constraints)``, ``("str", constraints)``
 - ``("bytes", mutable, constraints)``: ``bytes``, or ``bytearray`` when ``mutable``
+- ``("temporal", kind)``: ``"datetime"``, ``"naive_datetime"``, ``"date"``, ``"time"`` or
+  ``"timedelta"``
 - ``("converted", index)``, an index into ``Description.conversions``
 - ``("list", items, constraints)``, ``("dict", values, constraints)``
 - ``("collection", kind, items, constraints)``: a ``"tuple"`` of any length, a ``"set"`` or a
@@ -34,8 +36,11 @@ __all__ = [
     "Layout",
     "Member",
     "StructDescription",
+    "TemporalKind",
     "TypeDescription",
 ]
+
+TemporalKind: TypeAlias = Literal["datetime", "naive_datetime", "date", "time", "timedelta"]
 
 ConstraintValues: TypeAlias = dict[str, object]
 """Constraint values by name: ``minimum``, ``maximum``, ``min_length``, ``max_length``,
@@ -45,6 +50,7 @@ TypeDescription: TypeAlias = (
     tuple[Literal["any", "bool", "none"]]
     | tuple[Literal["int", "float", "str"], ConstraintValues]
     | tuple[Literal["bytes"], bool, ConstraintValues]
+    | tuple[Literal["temporal"], TemporalKind]
     | tuple[Literal["converted"], int]
     | tuple[Literal["list", "dict"], "TypeDescription", ConstraintValues]
     | tuple[

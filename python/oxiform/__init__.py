@@ -3,6 +3,7 @@
 from oxiform import json
 from oxiform._fields import field
 from oxiform._models import Model, model, replace
+from oxiform._naive import NaiveDateTime
 from oxiform._oxiform import __version__, warmup
 from oxiform.constraints import Ge, Le, Len, OneOf, Pattern
 from oxiform.errors import (
@@ -22,6 +23,7 @@ __all__ = [
     "Le",
     "Len",
     "Model",
+    "NaiveDateTime",
     "OneOf",
     "OxiformError",
     "Pattern",
