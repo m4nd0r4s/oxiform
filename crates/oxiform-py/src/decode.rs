@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use oxiform_core::executor::{Failure, execute};
 use oxiform_core::issues::{ContextValue, ErrorCode, Issue, Report, ReportKind};
-use oxiform_core::limits::Limits;
+use oxiform_core::options::Options;
 use oxiform_formats::json::JsonReader;
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
@@ -13,15 +13,18 @@ use pyo3::types::{PyBytes, PyString};
 
 use crate::compiled::{CompiledType, compiled_for};
 use crate::errors::report_error;
+use crate::options::{PyLimits, decode_options};
 use crate::python_objects::any_type;
 use crate::sink::PythonSink;
 
 /// Reads one JSON document as `type` (any type when omitted), validating it in the same pass.
 #[pyfunction]
-#[pyo3(signature = (data, r#type = None, *, max_errors = 100))]
+#[pyo3(signature = (data, r#type = None, *, mode = "strict", limits = None, max_errors = 100))]
 pub(crate) fn json_decode<'py>(
     data: &Bound<'py, PyAny>,
     r#type: Option<&Bound<'py, PyAny>>,
+    mode: &str,
+    limits: Option<&PyLimits>,
     max_errors: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
     let target = match r#type {
@@ -29,11 +32,8 @@ pub(crate) fn json_decode<'py>(
         None => any_type(data.py())?.clone(),
     };
     let compiled = compiled_for(&target)?;
-    let limits = Limits {
-        max_errors,
-        ..Limits::default()
-    };
-    decode_with(data, &target, &compiled, &limits)
+    let options = decode_options(mode, limits, max_errors)?;
+    decode_with(data, &target, &compiled, &options)
 }
 
 /// A reusable JSON decoder for one type: `ox.json.Decoder(User).decode(data)`.
@@ -41,14 +41,20 @@ pub(crate) fn json_decode<'py>(
 pub(crate) struct JsonDecoder {
     target: Py<PyAny>,
     compiled: Arc<CompiledType>,
-    limits: Limits,
+    options: Options,
 }
 
 #[pymethods]
 impl JsonDecoder {
     #[new]
-    #[pyo3(signature = (r#type = None, *, max_errors = 100))]
-    fn new(py: Python<'_>, r#type: Option<&Bound<'_, PyAny>>, max_errors: usize) -> PyResult<Self> {
+    #[pyo3(signature = (r#type = None, *, mode = "strict", limits = None, max_errors = 100))]
+    fn new(
+        py: Python<'_>,
+        r#type: Option<&Bound<'_, PyAny>>,
+        mode: &str,
+        limits: Option<&PyLimits>,
+        max_errors: usize,
+    ) -> PyResult<Self> {
         let target = match r#type {
             Some(target) => target.clone(),
             None => any_type(py)?.clone(),
@@ -57,10 +63,7 @@ impl JsonDecoder {
         Ok(Self {
             target: target.unbind(),
             compiled,
-            limits: Limits {
-                max_errors,
-                ..Limits::default()
-            },
+            options: decode_options(mode, limits, max_errors)?,
         })
     }
 
@@ -69,7 +72,7 @@ impl JsonDecoder {
             data,
             self.target.bind(data.py()),
             &self.compiled,
-            &self.limits,
+            &self.options,
         )
     }
 
@@ -83,9 +86,10 @@ fn decode_with<'py>(
     data: &Bound<'py, PyAny>,
     target: &Bound<'py, PyAny>,
     compiled: &CompiledType,
-    limits: &Limits,
+    options: &Options,
 ) -> PyResult<Bound<'py, PyAny>> {
     let py = data.py();
+    let limits = &options.limits;
     let input = read_input(data)?;
     if input.len() > limits.max_bytes {
         let issue = Issue {
@@ -113,7 +117,7 @@ fn decode_with<'py>(
     };
     let mut reader = JsonReader::new(text, limits.max_depth);
     let mut sink = PythonSink { py, compiled };
-    match execute(&compiled.plan, &mut reader, &mut sink, limits) {
+    match execute(&compiled.plan, &mut reader, &mut sink, options) {
         Ok(value) => Ok(value),
         Err(Failure::Invalid(report)) => Err(report_error(py, &report, target, "json")),
         Err(Failure::Sink(error)) => Err(error),

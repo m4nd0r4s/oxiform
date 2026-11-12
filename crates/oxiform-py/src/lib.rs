@@ -5,6 +5,7 @@ mod decode;
 mod description;
 mod encode;
 mod errors;
+mod options;
 mod python_objects;
 mod sink;
 mod slots;
@@ -20,5 +21,6 @@ fn _oxiform(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<encode::json::JsonEncoder>()?;
     module.add_class::<decode::JsonDecoder>()?;
     module.add_class::<compiled::PlanHandle>()?;
+    module.add_class::<options::PyLimits>()?;
     Ok(())
 }

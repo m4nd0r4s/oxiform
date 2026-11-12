@@ -311,14 +311,26 @@ For each model:
 | Input → target | `strict` | `lax` |
 | --- | --- | --- |
 | `"42"` → `int` | error | `42` |
+| `"42.0"` or `42.0` → `int` | error | `42` (a fraction of zeros only) |
 | `42` → `float` | `42.0` | `42.0` |
-| `4.5` → `int` | error | error (loss of information) |
-| `true` → `int` | error | error (`bool` is never a number) |
-| `"true"`, `"1"`, `"yes"` → `bool` | error | `True` |
+| `"1.5"` → `float` | error | `1.5` |
+| `4.5` or `"4.5"` → `int` | error | error (loss of information) |
+| `true` → `int`, `1` → `bool` | error | error (`bool` is never a number, nor a number a `bool`) |
+| `"true"`, `"yes"`, `"on"`, `"1"` → `bool` | error | `True` (and `"false"`, `"no"`, `"off"`, `"0"` → `False`; any case) |
 | `""` → `int \| None` | error | `None` (only when the type does not accept `str`) |
+| `"7"` → `int \| float` | error | `7` (no `str` variant: the first of `int`, `float`, `bool` that the text is valid for) |
+| `"2"` → `Literal[1, 2]`, `IntEnum` | error | the member whose value is `2` (an exact match always wins) |
 | `"1.5"` or `1.5` → `Decimal` | accepted (D11) | accepted |
 | `"2026-10-28T10:00:00Z"` → `datetime` | accepted (ISO string is the native form in JSON and YAML) | accepted |
 | `[1, 2]` → `tuple[int, int]` | `(1, 2)` | `(1, 2)` |
+
+How lax mode reads text:
+
+- **It reads what the field asks for.** The type decides, never the text: `"42"` stays a `str` in a `str` field, and in `int | str`.
+- **Integers** are an optional sign and ASCII digits, with leading zeros allowed (`"007"`), and optionally a fraction of zeros. No whitespace, no digit separators, no exponent. Size limits and constraints apply to the value after coercion; an error keeps the text that was received.
+- **Floats** are an optional sign, digits with an optional fraction and an optional exponent. `"inf"` and `"nan"` are not numbers.
+- **Strings coerce, containers do not.** Lax mode changes how each scalar is read, at any depth (`list[int]` reads `["1", "2"]`); it never reads a string as a list, a dict or a model. Composite values coming from text sources are read as JSON by those sources (section 6.2).
+- Failures have the same codes as in strict mode (`type`, `enum`, `literal`, `too_large`…), so a client sees one vocabulary in both modes.
 
 Fine-tuning without changing mode: `@ox.model(coerce={int: [str]})` accepts integers as strings only in that model.
 
@@ -627,6 +639,8 @@ oxiform assumes the input is not trusted: limits are on by default (D4) and YAML
 
 The number of collected errors has a separate limit: `max_errors=100` in each call (section 4.7).
 
+`ox.Limits` is an immutable value with the fields above, all keyword-only, plus `ox.Limits.none()`. Every decode call takes `limits=`; the size of the input is checked before it is parsed, and every other limit while it is read.
+
 ```python
 ox.json.decode(raw, User, limits=ox.Limits(max_bytes=1_000_000, max_depth=32))
 ox.set_defaults(limits=ox.Limits(max_bytes=256 * 2**20))   # global, at startup
@@ -901,7 +915,7 @@ ox.Ge, Gt, Le, Lt, MultipleOf, Digits, Finite, Len, Pattern, StartsWith, EndsWit
 # --- policies, limits, errors ---
 ox.Policy(*, datetime="rfc3339", decimal="string", bytes="base64", nan="error", secrets="mask")
 ox.Limits(*, max_bytes, max_depth, max_items, max_str_len, max_int_digits,
-          max_yaml_aliases); ox.Limits.none()
+          max_yaml_aliases); ox.Limits.none()   # max_yaml_aliases arrives with YAML
 ox.set_defaults(*, limits=None, redact_inputs=None)   # global, at startup
 ox.OxiformError, ox.ValidationError, ox.DecodeError, ox.EncodeError, ox.SchemaError
 ox.OxiformDeprecationWarning

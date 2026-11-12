@@ -4,7 +4,7 @@ from oxiform import json
 from oxiform._fields import field
 from oxiform._models import Model, model, replace
 from oxiform._naive import NaiveDateTime
-from oxiform._oxiform import __version__, warmup
+from oxiform._oxiform import Limits, __version__, warmup
 from oxiform.constraints import Ge, Le, Len, OneOf, Pattern
 from oxiform.errors import (
     DecodeError,
@@ -21,6 +21,7 @@ __all__ = [
     "External",
     "Ge",
     "Le",
+    "Limits",
     "Len",
     "Model",
     "NaiveDateTime",
