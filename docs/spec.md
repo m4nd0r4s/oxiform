@@ -432,6 +432,8 @@ ox.json.Encoder(**opts) / ox.json.Decoder(type, **opts)                     # re
 
 Without a type, `decode` returns builtins, so oxiform also works as a fast replacement for `json`, `yaml` and `tomllib`. Outside the formats, `ox.convert(obj, type, mode="lax")` validates data that is already in Python, and `ox.to_builtins(obj)` does the reverse, with the representations of `ox.json`.
 
+**Encoding as a declared type (planned, for hosts such as a web framework).** `encode(obj, type=T)` walks the plan of `T` and not of the class of `obj`: fields outside `T` are never written, a union dispatches on the class of the value among its declared variants, and `Any` falls back to the class of the value. When `obj` is not an instance of `T` (a `dict`, or another model with the same fields), each field of `T` is read as an attribute from an object and as a key from a mapping; a field that is neither raises `EncodeError` naming the field and the type. Without `type=`, encode keeps walking the class of the value.
+
 ### 5.2 Field attributes
 
 ```python
