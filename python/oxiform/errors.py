@@ -1,9 +1,12 @@
 """Exceptions raised by oxiform."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NotRequired, Self, TypedDict, cast
 
-from oxiform._problem import status_title
+from oxiform._problem import check_status, status_title
+
+_UNREADABLE_CODES = frozenset({"syntax", "limit_exceeded", "config_source"})
+"""The codes of a ``DecodeError``: the input could not be read at all."""
 
 __all__ = [
     "DecodeError",
@@ -76,6 +79,25 @@ class ValidationError(OxiformError, ValueError):
             grouped.setdefault(error["pointer"], []).append(error)
         return grouped
 
+    def by_source(self) -> dict[str, list[ErrorDetails]]:
+        """Problems grouped by their first path segment, which for an error made by
+        ``combine`` or ``with_source`` is the source: ``{"body": [...], "query": [...]}``."""
+        grouped: dict[str, list[ErrorDetails]] = {}
+        for error in self.errors():
+            first = error["path"][0] if error["path"] else ""
+            grouped.setdefault(str(first), []).append(error)
+        return grouped
+
+    def unreadable_sources(self) -> list[str]:
+        """The sources, in order, whose input could not be read at all: those with a problem coded
+        ``syntax``, ``limit_exceeded`` or ``config_source`` (what a ``DecodeError`` holds). Meant
+        for an error made by ``combine``, to pick the status of the response: see the spec."""
+        return [
+            source
+            for source, errors in self.by_source().items()
+            if any(error["code"] in _UNREADABLE_CODES for error in errors)
+        ]
+
     def with_source(self, source: str) -> Self:
         """The same problems found in ``source`` (``"body"``, ``"query"``, ``"path"``,
         ``"header"``, ``"cookie"``): the source becomes the first path segment and so the first
@@ -105,8 +127,10 @@ class ValidationError(OxiformError, ValueError):
         parts and their own order inside a part; each path starts with its source, and codes,
         messages, ``input`` and ``ctx`` are kept. At most ``max_errors`` problems are kept, the
         first ones, and ``truncated`` is set when one was dropped or a part was itself truncated.
-        The result is a ``DecodeError`` only when every part is one. Raise the result, or call
-        ``to_problem()`` on it for a single RFC 9457 response.
+        The budget is first come, first served, so pass the parts in order of priority (path,
+        query, then body). The result is a ``DecodeError`` only when every part is one; with no
+        parts it is an empty ``ValidationError``. Raise the result, or call ``to_problem()`` on
+        it for a single RFC 9457 response, and use ``unreadable_sources()`` to pick its status.
         """
         limit = _max_errors(max_errors)
         pairs = _pairs(parts)
@@ -149,6 +173,12 @@ class ValidationError(OxiformError, ValueError):
         ``title`` defaults to the standard phrase of ``status``. ``errors`` lists every problem
         as ``{"pointer", "code", "detail"}``.
         """
+        status = check_status(status)
+        _check_text("type", type, "the URI that names the kind of problem, or leave the default")
+        if title is not None:
+            _check_text("title", title, "a short summary of the kind of problem, or omit it")
+        if instance is not None:
+            _check_text("instance", instance, "a URI for this occurrence, or omit it")
         problem: dict[str, object] = {
             "type": type,
             "title": title if title is not None else status_title(status),
@@ -167,7 +197,8 @@ class ValidationError(OxiformError, ValueError):
         count = len(self._errors)
         noun = "error" if count == 1 else "errors"
         more = " (stopped at the maximum)" if self.truncated else ""
-        return f"{count} {noun} validating {self.target} ({self.format}){more}"
+        shown_format = f" ({self.format})" if self.format else ""
+        return f"{count} {noun} validating {self.target}{shown_format}{more}"
 
     def __str__(self) -> str:
         lines = [self._summary() + ":"]
@@ -185,12 +216,26 @@ class DecodeError(ValidationError):
     """The input could not be read: it is malformed, or a limit was exceeded."""
 
 
-def _pairs(
-    parts: Mapping[str, ValidationError] | Iterable[tuple[str, ValidationError]],
-) -> list[tuple[str, ValidationError]]:
+def _pairs(parts: object) -> list[tuple[str, ValidationError]]:
+    hint = "pass a mapping of source to ValidationError, or (source, error) pairs"
     if isinstance(parts, Mapping):
         return list(cast("Mapping[str, ValidationError]", parts).items())
-    return list(parts)
+    if isinstance(parts, (str, bytes)) or not isinstance(parts, Iterable):
+        raise TypeError(f"combine() cannot read parts of type {type(parts).__name__}; {hint}")
+    pairs: list[tuple[str, ValidationError]] = []
+    for item in cast("Iterable[object]", parts):
+        if not isinstance(item, (tuple, list)) or len(cast("Sequence[object]", item)) != 2:
+            raise TypeError(
+                f"combine() found {item!r} where a (source, error) pair belongs; {hint}"
+            )
+        source, part = cast("Sequence[object]", item)
+        pairs.append((cast("str", source), cast("ValidationError", part)))
+    return pairs
+
+
+def _check_text(name: str, value: object, meaning: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string, not {value!r}; pass {meaning}")
 
 
 def _check_source(source: object) -> None:
@@ -220,16 +265,17 @@ def _escape_pointer_segment(segment: str) -> str:
 
 def _in_source(error: ErrorDetails, source: str) -> ErrorDetails:
     """A copy of ``error`` with ``source`` as the first segment of its path and pointer."""
-    moved = ErrorDetails(
-        code=error["code"],
-        path=[source, *error["path"]],
-        pointer="/" + _escape_pointer_segment(source) + error["pointer"],
-        message=error["message"],
-        ctx={key: _context_in_source(value, source) for key, value in error["ctx"].items()},
-    )
+    # The keys stay in the order the engine writes them: input before ctx.
+    moved: dict[str, object] = {
+        "code": error["code"],
+        "path": [source, *error["path"]],
+        "pointer": "/" + _escape_pointer_segment(source) + error["pointer"],
+        "message": error["message"],
+    }
     if "input" in error:
         moved["input"] = error["input"]
-    return moved
+    moved["ctx"] = {key: _context_in_source(value, source) for key, value in error["ctx"].items()}
+    return cast("ErrorDetails", moved)
 
 
 def _context_in_source(value: object, source: str) -> object:

@@ -1,6 +1,7 @@
 """Source prefixes and combined reports (OX-4): one problem for the parts of a request."""
 
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Annotated, Any, Literal
 
 import pytest
@@ -180,8 +181,9 @@ def test_max_errors_is_checked_like_the_decode_calls_check_it() -> None:
             ox.ValidationError.combine(request_errors(), max_errors=value)
     with pytest.raises(ValueError, match=r"at least 1.*max_errors=1"):
         ox.ValidationError.combine(request_errors(), max_errors=0)
-    with pytest.raises(TypeError, match=r"max_errors must be a whole number"):
-        ox.ValidationError.combine(request_errors(), max_errors=1.5)  # pyright: ignore[reportArgumentType]
+    for value in (1.5, True, False):
+        with pytest.raises(TypeError, match=r"max_errors must be a whole number"):
+            ox.ValidationError.combine(request_errors(), max_errors=value)  # pyright: ignore[reportArgumentType]
 
 
 def test_pairs_may_repeat_a_source_and_keep_their_order() -> None:
@@ -279,13 +281,114 @@ def test_to_problem_takes_a_status_and_the_title_follows_it() -> None:
     assert error.to_problem(status=413, title="Too big")["title"] == "Too big"
 
 
-@pytest.mark.parametrize("status", [200, 399, 600, True, "422"])
-def test_to_problem_refuses_a_status_that_is_not_an_error_status(status: object) -> None:
+@pytest.mark.parametrize("status", [200, 399, 600, 999, True, False, None, "422", 422.0])
+@pytest.mark.parametrize("title", [None, "Custom title"])
+def test_to_problem_refuses_a_status_that_is_not_an_error_status_whatever_the_title(
+    status: object, title: str | None
+) -> None:
     with pytest.raises(ValueError, match=r"status must be an HTTP error status from 400 to 599"):
-        fail(b'"x"', int).to_problem(status=status)  # pyright: ignore[reportArgumentType]
+        fail(b'"x"', int).to_problem(status=status, title=title)  # pyright: ignore[reportArgumentType]
+
+
+def test_to_problem_turns_an_http_status_member_into_a_plain_int() -> None:
+    problem = fail(b'"x"', int).to_problem(status=HTTPStatus.UNPROCESSABLE_ENTITY)
+    assert problem["status"] == 422
+    assert type(problem["status"]) is int
+    assert problem["title"] == "Unprocessable Content"
+
+
+@pytest.mark.parametrize(
+    ("status", "title"),
+    [
+        (400, "Bad Request"),
+        (402, "Payment Required"),
+        (407, "Proxy Authentication Required"),
+        (413, "Content Too Large"),
+        (507, "Insufficient Storage"),
+        (508, "Loop Detected"),
+        (511, "Network Authentication Required"),
+    ],
+)
+def test_to_problem_knows_the_registered_titles(status: int, title: str) -> None:
+    assert fail(b'"x"', int).to_problem(status=status)["title"] == title
+
+
+@pytest.mark.parametrize("name", ["type", "title", "instance"])
+@pytest.mark.parametrize("value", ["", 1, b"x", ["a"]])
+def test_to_problem_checks_type_title_and_instance_are_non_empty_strings(
+    name: str, value: object
+) -> None:
+    arguments: dict[str, Any] = {name: value}
+    with pytest.raises(ValueError, match=rf"{name} must be a non-empty string.*pass "):
+        fail(b'"x"', int).to_problem(**arguments)
 
 
 def test_to_problem_asks_for_a_title_when_it_has_none_for_the_status() -> None:
     with pytest.raises(ValueError, match=r"pass title="):
         fail(b'"x"', int).to_problem(status=499)
     assert fail(b'"x"', int).to_problem(status=499, title="Client Closed Request")["status"] == 499
+
+
+@pytest.mark.parametrize("parts", ["ab", b"ab", 5, None])
+def test_combine_refuses_parts_that_are_not_a_mapping_or_pairs(parts: object) -> None:
+    with pytest.raises(TypeError, match=r"cannot read parts of type.*mapping of source to Validat"):
+        ox.ValidationError.combine(parts)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize("item", [("query",), ("a", "b", "c"), "ab", 7])
+def test_combine_refuses_a_part_that_is_not_a_pair(item: object) -> None:
+    with pytest.raises(TypeError, match=r"where a \(source, error\) pair belongs"):
+        ox.ValidationError.combine([item])  # pyright: ignore[reportArgumentType]
+
+
+def test_combine_refuses_a_bare_error_in_the_list() -> None:
+    with pytest.raises(TypeError, match=r"where a \(source, error\) pair belongs"):
+        ox.ValidationError.combine([fail(b'"x"', int)])  # pyright: ignore[reportArgumentType]
+
+
+def test_combining_nothing_says_so_without_empty_parentheses() -> None:
+    problem = ox.ValidationError.combine({}).to_problem()
+    assert problem["detail"] == "0 errors validating request"
+    assert problem["errors"] == []
+
+
+def test_by_source_groups_the_combined_problems_by_their_source() -> None:
+    grouped = ox.ValidationError.combine(request_errors()).by_source()
+    assert list(grouped) == ["body", "query", "path"]
+    assert [error["pointer"] for error in grouped["body"]] == ["/body/name", "/body/quantity"]
+    assert [error["code"] for error in grouped["path"]] == ["type"]
+
+
+def test_unreadable_sources_name_the_parts_that_could_not_be_read() -> None:
+    with pytest.raises(ox.DecodeError) as syntax:
+        ox.json.decode(b"{", Page)
+    with pytest.raises(ox.DecodeError) as too_big:
+        ox.json.decode(b'{"page": 1}', Page, limits=ox.Limits(max_bytes=3))
+    readable = ox.ValidationError.combine(request_errors())
+    assert readable.unreadable_sources() == []
+    mixed = ox.ValidationError.combine(
+        {
+            "path": request_errors()["path"],
+            "query": syntax.value,
+            "body": too_big.value,
+            "header": request_errors()["query"],
+        }
+    )
+    assert mixed.unreadable_sources() == ["query", "body"]
+    assert type(mixed) is ox.ValidationError
+
+
+def test_the_budget_is_first_come_so_the_order_of_the_parts_is_the_priority() -> None:
+    parts = request_errors()
+    by_priority = ox.ValidationError.combine(
+        [("path", parts["path"]), ("query", parts["query"]), ("body", parts["body"])], max_errors=2
+    )
+    assert [error["pointer"] for error in by_priority.errors()] == ["/path/id", "/query/page"]
+
+
+def test_a_prefixed_problem_keeps_the_key_order_of_the_engine() -> None:
+    original = fail(b'{"name": "", "quantity": 1}', Item).errors()[0]
+    moved = ox.ValidationError.combine(
+        {"body": fail(b'{"name": "", "quantity": 1}', Item)}
+    ).errors()[0]
+    assert list(moved) == list(original) == ["code", "path", "pointer", "message", "input", "ctx"]
