@@ -13,7 +13,7 @@ use pyo3::types::{PyBytes, PyString};
 
 use crate::compiled::{CompiledType, compiled_for};
 use crate::errors::report_error;
-use crate::options::{PyLimits, decode_options};
+use crate::options::{PyLimits, decode_options, max_errors_argument};
 use crate::python_objects::any_type;
 use crate::sink::PythonSink;
 
@@ -25,7 +25,7 @@ pub(crate) fn json_decode<'py>(
     r#type: Option<&Bound<'py, PyAny>>,
     mode: &str,
     limits: Option<&PyLimits>,
-    max_errors: usize,
+    #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
     let target = match r#type {
         Some(target) => target.clone(),
@@ -53,7 +53,7 @@ impl JsonDecoder {
         r#type: Option<&Bound<'_, PyAny>>,
         mode: &str,
         limits: Option<&PyLimits>,
-        max_errors: usize,
+        #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
     ) -> PyResult<Self> {
         let target = match r#type {
             Some(target) => target.clone(),

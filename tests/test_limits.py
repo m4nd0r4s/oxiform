@@ -243,3 +243,28 @@ def test_max_str_len_allows_a_string_of_exactly_that_length() -> None:
     # The limit counts bytes of UTF-8, as the spec says.
     with pytest.raises(ox.DecodeError):
         ox.json.decode('"éé"'.encode(), str, limits=limits)
+
+
+@pytest.mark.parametrize("value", [-1, 2**64, -(2**70)])
+def test_max_errors_out_of_range_says_what_is_allowed(value: int) -> None:
+    with pytest.raises(ValueError, match=r"max_errors must be a whole number from 1 to") as caught:
+        ox.json.decode(b"[1]", list[int], max_errors=value)
+    assert str(value) in str(caught.value)
+    with pytest.raises(ValueError, match=r"max_errors must be a whole number from 1 to"):
+        ox.json.Decoder(list[int], max_errors=value)
+
+
+def test_max_errors_of_zero_is_refused_and_one_stops_at_the_first_error() -> None:
+    with pytest.raises(ValueError, match=r"at least 1.*max_errors=1"):
+        ox.json.decode(b"[1]", list[int], max_errors=0)
+    with pytest.raises(ValueError, match=r"at least 1"):
+        ox.json.Decoder(list[int], max_errors=0)
+    with pytest.raises(ox.ValidationError) as caught:
+        ox.json.decode(b'["a", "b"]', list[int], max_errors=1)
+    assert len(caught.value.errors()) == 1
+    assert caught.value.truncated
+
+
+def test_max_errors_of_the_wrong_type_is_a_type_error() -> None:
+    with pytest.raises(TypeError):
+        ox.json.decode(b"[1]", list[int], max_errors="all")  # type: ignore[arg-type]

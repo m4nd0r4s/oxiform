@@ -391,7 +391,7 @@ e.by_path()      # {"/email": [...]} for forms
 e.truncated      # True if it stopped at max_errors
 ```
 
-- Collects all errors up to `max_errors=100`; `fail_fast=True` stops at the first.
+- Collects all errors up to `max_errors=100`; `fail_fast=True` stops at the first. `max_errors` is a whole number from 1 up; `0`, a negative number or one above 2⁶⁴ − 1 is a `ValueError` (`max_errors=1` is "stop at the first error").
 - Messages are in English by default. `ox.messages.override(code, template)` changes any message by code; the template uses the fields of `ctx` (`"must be at least {min} characters"`).
 
 Exception hierarchy:

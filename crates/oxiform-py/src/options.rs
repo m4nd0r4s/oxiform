@@ -102,6 +102,26 @@ fn size_argument(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {
     })
 }
 
+/// The `max_errors` argument of a decode call: a whole number from 1 to the largest `usize`.
+pub(crate) fn max_errors_argument(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let count = value.extract::<usize>().map_err(|error| {
+        if error.is_instance_of::<PyOverflowError>(value.py()) {
+            PyValueError::new_err(format!(
+                "max_errors must be a whole number from 1 to {}, not {value}",
+                usize::MAX
+            ))
+        } else {
+            error
+        }
+    })?;
+    if count == 0 {
+        return Err(PyValueError::new_err(
+            "max_errors must be at least 1, not 0; use max_errors=1 to stop at the first error",
+        ));
+    }
+    Ok(count)
+}
+
 macro_rules! size_argument {
     ($function:ident, $name:literal) => {
         fn $function(value: &Bound<'_, PyAny>) -> PyResult<usize> {
