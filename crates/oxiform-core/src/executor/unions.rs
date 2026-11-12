@@ -6,7 +6,7 @@ use crate::description::TagMode;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode, PathSegment};
 use crate::options::Mode;
-use crate::plan::{NodeId, StructId, TaggedPlan, UnionPlan};
+use crate::plan::{Node, NodeId, StructId, TaggedPlan, UnionPlan};
 use crate::sink::Sink;
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
@@ -19,10 +19,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 (_, Some(float)) => Some(float),
                 (integer, None) => integer,
             },
-            Event::String(text) => match union.string {
-                None if self.mode == Mode::Lax => lax_variant(union, text),
-                variant => variant,
-            },
+            Event::String(_) if self.mode == Mode::Lax => return self.lax_string(union, event),
+            Event::String(_) => union.string,
             Event::SequenceStart => union.sequence,
             Event::MapStart => union.map,
             Event::Key(_) | Event::MapEnd | Event::SequenceEnd | Event::End => None,
@@ -30,6 +28,45 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         match variant {
             Some(node) => self.value(node, event),
             None => self.mismatch(&union.name, event),
+        }
+    }
+
+    /// A string in lax mode. A `str` variant reads every string (`"42"` stays text in
+    /// `int | str`). A variant that reads text only in one form (a `Literal`, an `Enum`, a
+    /// date, base64, a `UUID`) gets the text first, and when the text does not have that form
+    /// the union reads it as the integer, float or bool it spells, or as `None` when empty.
+    #[cold]
+    fn lax_string(&mut self, union: &UnionPlan, event: Event<'input>) -> Step<S> {
+        let Event::String(text) = &event else {
+            unreachable!("only strings are read here");
+        };
+        let lax = lax_variant(union, text);
+        let (string, lax) = match (union.string, lax) {
+            (None, Some(lax)) => return self.read_lax(lax, event),
+            (None, None) => return self.mismatch(&union.name, event),
+            (Some(string), None) => return self.value(string, event),
+            (Some(string), Some(lax)) => (string, lax),
+        };
+        if matches!(self.plan.node(string), Node::String(_)) {
+            return self.value(string, event);
+        }
+        let events = [event.clone()];
+        let (outcome, issues) = self.attempt(&events, |nested, event| nested.value(string, event));
+        match outcome {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) | Err(Stop::TooManyErrors) => self.read_lax(lax, event),
+            Err(Stop::Unreadable) => {
+                self.issues.extend(issues);
+                Err(Stop::Unreadable)
+            }
+            Err(Stop::Sink(error)) => Err(Stop::Sink(error)),
+        }
+    }
+
+    fn read_lax(&mut self, variant: LaxVariant, event: Event<'input>) -> Step<S> {
+        match variant {
+            LaxVariant::Null(node) => self.value(node, Event::Null),
+            LaxVariant::Scalar(node) => self.value(node, event),
         }
     }
 
@@ -317,21 +354,34 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 }
 
-/// The variant that lax mode reads a string as when there is no string variant: `None` for an
-/// empty string, then the first of integer, float and bool that the text is valid for.
-#[cold]
-fn lax_variant(union: &UnionPlan, text: &str) -> Option<NodeId> {
-    if text.is_empty() && union.null.is_some() {
-        return union.null;
+/// What lax mode reads a string as when the union has no `str` variant that takes it.
+enum LaxVariant {
+    /// An empty string is `None`.
+    Null(NodeId),
+    /// The text is an integer, a float or a bool.
+    Scalar(NodeId),
+}
+
+/// The variant that lax mode reads `text` as: `None` for an empty string, then the first of
+/// integer, float and bool that the text is valid for.
+fn lax_variant(union: &UnionPlan, text: &str) -> Option<LaxVariant> {
+    if let (true, Some(null)) = (text.is_empty(), union.null) {
+        return Some(LaxVariant::Null(null));
     }
-    if lax_integer_text(text).is_some() && union.integer.is_some() {
-        return union.integer;
+    if lax_integer_text(text).is_some()
+        && let Some(integer) = union.integer
+    {
+        return Some(LaxVariant::Scalar(integer));
     }
-    if is_lax_float_text(text) && union.float.is_some() {
-        return union.float;
+    if is_lax_float_text(text)
+        && let Some(float) = union.float
+    {
+        return Some(LaxVariant::Scalar(float));
     }
-    if lax_bool_text(text).is_some() {
-        return union.bool;
+    if lax_bool_text(text).is_some()
+        && let Some(boolean) = union.bool
+    {
+        return Some(LaxVariant::Scalar(boolean));
     }
     None
 }

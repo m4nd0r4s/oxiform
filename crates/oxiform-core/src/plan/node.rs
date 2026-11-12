@@ -33,7 +33,7 @@ pub enum Node {
         length: LengthRange,
     },
     /// `T | None`. With `empty_is_none`, lax mode reads an empty string as `None`: set when the
-    /// type of `inner` does not accept a string.
+    /// type of `inner` cannot read an empty string.
     Optional {
         inner: NodeId,
         empty_is_none: bool,

@@ -74,25 +74,32 @@ impl Compiler<'_> {
         id
     }
 
-    /// Whether the node reads a string as itself or as text it converts (a date, a `Decimal`,
-    /// base64), so that an empty string is a value of the type and not `None`.
-    fn accepts_text(&self, node: NodeId) -> bool {
+    /// Whether the node can read an empty string as a value of its type (`str`, base64, a
+    /// `Literal` that has `""`), so that lax mode does not read `""` as `None` in front of it.
+    /// A date, a number or a `Decimal` has no empty form: `""` is how a form or an environment
+    /// variable says "not set".
+    fn accepts_empty_text(&self, node: NodeId) -> bool {
         match &self.nodes[node.0 as usize] {
-            Node::Any | Node::String(_) | Node::Bytes { .. } | Node::Temporal(_) => true,
+            Node::Any | Node::String(_) | Node::Bytes { .. } => true,
             Node::Converted(id) => {
-                self.description.conversions[id.index()].input != ConversionInput::Integer
+                self.description.conversions[id.index()].input == ConversionInput::String
             }
             Node::Choice(id) => self.description.choices[id.index()]
                 .values
                 .iter()
-                .any(|value| matches!(value, ChoiceValue::String(_))),
-            Node::Optional { inner, .. } => self.accepts_text(*inner),
-            Node::Union(union) => union.string.is_some(),
-            Node::Untagged(variants) => variants.iter().any(|(_, node)| self.accepts_text(*node)),
+                .any(|value| matches!(value, ChoiceValue::String(text) if text.is_empty())),
+            Node::Optional { inner, .. } => self.accepts_empty_text(*inner),
+            Node::Union(union) => union
+                .string
+                .is_some_and(|string| self.accepts_empty_text(string)),
+            Node::Untagged(variants) => variants
+                .iter()
+                .any(|(_, node)| self.accepts_empty_text(*node)),
             Node::Bool
             | Node::None
             | Node::Integer(_)
             | Node::Float(_)
+            | Node::Temporal(_)
             | Node::List { .. }
             | Node::Tuple(_)
             | Node::Dict { .. }
@@ -238,7 +245,7 @@ impl Compiler<'_> {
                 let inner = self.compile_type(inner, location)?;
                 Node::Optional {
                     inner,
-                    empty_is_none: !self.accepts_text(inner),
+                    empty_is_none: !self.accepts_empty_text(inner),
                 }
             }
             TypeDescription::Struct(index) => {

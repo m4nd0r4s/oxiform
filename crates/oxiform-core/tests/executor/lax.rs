@@ -2,7 +2,7 @@
 
 use oxiform_core::description::{
     Bound, ChoiceDescription, ChoiceValue, Constraints, ConversionDescription, ConversionInput,
-    Description, SequenceKind, TypeDescription,
+    Description, SequenceKind, TemporalKind, TypeDescription,
 };
 use oxiform_core::issues::ReportKind;
 
@@ -172,7 +172,21 @@ fn reads_an_empty_string_as_none_only_when_the_type_does_not_accept_text() {
         root: optional(TypeDescription::Choice(0)),
         ..choice(vec![ChoiceValue::String("a".into())])
     };
-    assert_eq!(decode_lax(&literal, r#""""#).unwrap_err().issues.len(), 1);
+    assert_eq!(
+        decode_lax(&literal, r#""""#),
+        Ok(Value::None),
+        "a Literal without \"\" has no empty form"
+    );
+    assert_eq!(decode_lax(&literal, r#""a""#), Ok(Value::Choice(0, 0)));
+    let empty_literal = Description {
+        root: optional(TypeDescription::Choice(0)),
+        ..choice(vec![ChoiceValue::String(String::new())])
+    };
+    assert_eq!(decode_lax(&empty_literal, r#""""#), Ok(Value::Choice(0, 0)));
+    for temporal in [TemporalKind::Date, TemporalKind::DateTime] {
+        let description = plain(optional(TypeDescription::Temporal(temporal)));
+        assert_eq!(decode_lax(&description, r#""""#), Ok(Value::None));
+    }
     let numeric_literal = Description {
         root: optional(TypeDescription::Choice(0)),
         ..choice(vec![ChoiceValue::Integer(1)])
@@ -277,4 +291,139 @@ fn coerces_inside_containers_and_structures() {
     assert_eq!(report.kind, ReportKind::Validation);
     let pointers: Vec<_> = report.issues.iter().map(|issue| issue.pointer()).collect();
     assert_eq!(pointers, ["/id", "/admin"]);
+}
+
+fn union_of(variants: Vec<TypeDescription>) -> Description {
+    plain(TypeDescription::Union(variants))
+}
+
+#[test]
+fn reads_an_empty_string_as_none_in_unions_with_none() {
+    let none = || TypeDescription::None;
+    for variants in [
+        vec![integer(), float(), none()],
+        vec![integer(), TypeDescription::Bool, none()],
+        vec![float(), none()],
+        vec![TypeDescription::Bool, none()],
+    ] {
+        let description = union_of(variants);
+        assert_eq!(decode_lax(&description, r#""""#), Ok(Value::None));
+        assert_eq!(decode_lax(&description, "null"), Ok(Value::None));
+        assert!(
+            decode(&description, r#""""#).is_err(),
+            "strict mode keeps it an error"
+        );
+    }
+    // The nested form of the same type reads the same text the same way.
+    let nested = plain(optional(TypeDescription::Union(vec![integer(), float()])));
+    assert_eq!(decode_lax(&nested, r#""""#), Ok(Value::None));
+    assert_eq!(decode_lax(&nested, r#""2.5""#), Ok(Value::Float(2.5)));
+    // A string variant still keeps the empty string, and so does a Literal that has it.
+    let with_text = union_of(vec![string(), none()]);
+    assert_eq!(
+        decode_lax(&with_text, r#""""#),
+        Ok(Value::String(String::new()))
+    );
+    let literal = Description {
+        root: TypeDescription::Union(vec![integer(), TypeDescription::Choice(0), none()]),
+        ..choice(vec![ChoiceValue::String("auto".into())])
+    };
+    assert_eq!(decode_lax(&literal, r#""""#), Ok(Value::None));
+    assert_eq!(decode_lax(&literal, r#""auto""#), Ok(Value::Choice(0, 0)));
+    assert_eq!(decode_lax(&literal, r#""4""#), Ok(Value::Integer(4)));
+    assert!(decode_lax(&literal, r#""x""#).is_err());
+}
+
+#[test]
+fn a_literal_member_wins_over_a_number_in_a_union_and_numbers_still_coerce() {
+    let auto = Description {
+        root: TypeDescription::Union(vec![integer(), TypeDescription::Choice(0)]),
+        ..choice(vec![ChoiceValue::String("auto".into())])
+    };
+    let reversed = Description {
+        root: TypeDescription::Union(vec![TypeDescription::Choice(0), integer()]),
+        ..choice(vec![ChoiceValue::String("auto".into())])
+    };
+    for description in [&auto, &reversed] {
+        assert_eq!(decode_lax(description, r#""4""#), Ok(Value::Integer(4)));
+        assert_eq!(decode_lax(description, r#""-4.0""#), Ok(Value::Integer(-4)));
+        assert_eq!(decode_lax(description, "4"), Ok(Value::Integer(4)));
+        assert_eq!(
+            decode_lax(description, r#""auto""#),
+            Ok(Value::Choice(0, 0))
+        );
+        assert!(
+            decode(description, r#""4""#).is_err(),
+            "strict stays strict"
+        );
+        // Text that is neither reports the error of the text variant.
+        let rejected = decode_lax(description, r#""4.5""#).unwrap_err();
+        assert_eq!(rejected.issues.len(), 1);
+        assert_eq!(rejected.issues[0].code.as_str(), "literal");
+    }
+    // An exact member beats a coercion when both could read the text.
+    let both = Description {
+        root: TypeDescription::Union(vec![TypeDescription::Bool, TypeDescription::Choice(0)]),
+        ..choice(vec![ChoiceValue::String("yes".into())])
+    };
+    assert_eq!(decode_lax(&both, r#""yes""#), Ok(Value::Choice(0, 0)));
+    assert_eq!(decode_lax(&both, r#""on""#), Ok(Value::Bool(true)));
+    assert_eq!(decode_lax(&both, r#""0""#), Ok(Value::Bool(false)));
+    // Constraints still apply to the coerced value.
+    let bounded = Description {
+        root: TypeDescription::Union(vec![
+            TypeDescription::Integer(Constraints {
+                minimum: Some(Bound::Integer(10)),
+                ..Constraints::default()
+            }),
+            TypeDescription::Choice(0),
+        ]),
+        ..choice(vec![ChoiceValue::String("auto".into())])
+    };
+    assert_eq!(
+        summary_codes(&bounded, r#""4""#),
+        ["too_small"],
+        "the text is read as the integer and then checked"
+    );
+}
+
+fn summary_codes(description: &Description, input: &str) -> Vec<&'static str> {
+    decode_lax(description, input)
+        .unwrap_err()
+        .issues
+        .iter()
+        .map(|issue| issue.code.as_str())
+        .collect()
+}
+
+#[test]
+fn text_that_has_the_form_of_a_date_is_a_date_and_other_text_is_a_number() {
+    let date = TypeDescription::Temporal(TemporalKind::Date);
+    for variants in [
+        vec![integer(), date.clone()],
+        vec![date.clone(), integer()],
+        vec![date.clone(), TypeDescription::Bool],
+    ] {
+        let description = union_of(variants);
+        let read = decode_lax(&description, r#""2026-01-31""#).unwrap();
+        assert!(matches!(read, Value::Temporal(_)), "{read:?}");
+    }
+    let with_integer = union_of(vec![integer(), date.clone()]);
+    assert_eq!(decode_lax(&with_integer, r#""4""#), Ok(Value::Integer(4)));
+    assert_eq!(decode_lax(&with_integer, "4"), Ok(Value::Integer(4)));
+    let rejected = decode_lax(&with_integer, r#""soon""#).unwrap_err();
+    assert_eq!(rejected.issues[0].code.as_str(), "format");
+    assert!(decode(&with_integer, r#""4""#).is_err());
+}
+
+#[test]
+fn a_str_variant_still_takes_every_string_next_to_a_literal() {
+    let description = Description {
+        root: TypeDescription::Union(vec![integer(), string()]),
+        ..plain(TypeDescription::Any)
+    };
+    assert_eq!(
+        decode_lax(&description, r#""4""#),
+        Ok(Value::String("4".into()))
+    );
 }
