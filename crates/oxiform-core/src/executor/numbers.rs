@@ -39,8 +39,11 @@ pub(crate) fn without_leading_zeros(text: &str) -> Cow<'_, str> {
         None => ("", text),
     };
     let significant = digits.trim_start_matches('0');
-    if significant.len() == digits.len() || significant.is_empty() {
+    if significant.len() == digits.len() {
         return Cow::Borrowed(text);
+    }
+    if significant.is_empty() {
+        return Cow::Borrowed("0");
     }
     if sign.is_empty() {
         Cow::Borrowed(significant)
@@ -175,10 +178,10 @@ mod tests {
         for (text, stripped) in [
             ("7", "7"),
             ("0", "0"),
-            ("000", "000"),
+            ("000", "0"),
             ("007", "7"),
             ("-007", "-7"),
-            ("+0012", "12"),
+            ("+0012", "+12"),
             ("-100", "-100"),
         ] {
             assert_eq!(without_leading_zeros(text), stripped, "{text}");
