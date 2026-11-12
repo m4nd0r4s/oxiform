@@ -45,6 +45,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             (None, Some(lax)) => return self.read_lax(lax, event),
             (None, None) => return self.mismatch(&union.name, event),
             (Some(string), None) => return self.value(string, event),
+            (Some(_), Some(LaxVariant::Null(null))) => return self.value(null, Event::Null),
             (Some(string), Some(lax)) => (string, lax),
         };
         if matches!(self.plan.node(string), Node::String(_)) {
@@ -365,7 +366,7 @@ enum LaxVariant {
 /// The variant that lax mode reads `text` as: `None` for an empty string, then the first of
 /// integer, float and bool that the text is valid for.
 fn lax_variant(union: &UnionPlan, text: &str) -> Option<LaxVariant> {
-    if let (true, Some(null)) = (text.is_empty(), union.null) {
+    if let (true, true, Some(null)) = (text.is_empty(), union.empty_is_none, union.null) {
         return Some(LaxVariant::Null(null));
     }
     if lax_integer_text(text).is_some()

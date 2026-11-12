@@ -3,11 +3,17 @@
 ``Optional[X]`` is written out on purpose: it is a different declaration from ``X | None``.
 """
 
-# ruff: noqa: UP045
+# ruff: noqa: UP007, UP045
 
 import datetime
+import enum
+import ipaddress
+import pathlib
+import uuid
+import zoneinfo
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Optional
+from decimal import Decimal
+from typing import Annotated, Any, Literal, Optional, Union
 
 import pytest
 
@@ -122,3 +128,112 @@ def test_text_that_has_the_form_of_a_date_is_a_date_and_other_text_is_a_number()
 
 def test_a_str_variant_still_takes_every_string() -> None:
     assert lax(b'"4"', int | str) == "4"
+
+
+class Perm(enum.IntFlag):
+    READ = 1
+    WRITE = 2
+
+
+class Colour(enum.Enum):
+    RED = "red"
+
+
+class Level(enum.IntEnum):
+    LOW = 1
+
+
+PATHS: tuple[Any, ...] = (
+    pathlib.Path,
+    pathlib.PurePath,
+    pathlib.PosixPath,
+    pathlib.PurePosixPath,
+    pathlib.PureWindowsPath,
+)
+
+NO_EMPTY_FORM: list[Any] = [
+    int,
+    float,
+    bool,
+    Decimal,
+    datetime.date,
+    datetime.datetime,
+    datetime.time,
+    datetime.timedelta,
+    uuid.UUID,
+    zoneinfo.ZoneInfo,
+    *PATHS,
+    ipaddress.IPv4Address,
+    ipaddress.IPv6Address,
+    ipaddress.IPv4Network,
+    ipaddress.IPv6Network,
+    ipaddress.IPv4Interface,
+    ipaddress.IPv6Interface,
+    Perm,
+    Level,
+    Colour,
+    Literal["a", "b"],
+    Literal[1, 2],
+    list[int],
+    dict[str, int],
+]
+
+
+@pytest.mark.parametrize("kind", NO_EMPTY_FORM, ids=repr)
+def test_an_empty_string_is_none_for_every_type_with_no_empty_form(kind: Any) -> None:
+    assert lax(b'""', Optional[kind]) is None
+    assert lax(b'""', kind | None) is None
+    assert lax(b'""', Union[kind, None]) is None
+    assert lax(b"null", Optional[kind]) is None
+    if kind not in PATHS:  # Path("") is a valid path: only lax mode reads it as unset
+        with pytest.raises(ox.ValidationError):
+            ox.json.decode(b'""', Optional[kind])
+
+
+@pytest.mark.parametrize("kind", [kind for kind in NO_EMPTY_FORM if kind not in PATHS], ids=repr)
+def test_without_none_an_empty_string_is_still_an_error(kind: Any) -> None:
+    with pytest.raises(ox.ValidationError):
+        lax(b'""', kind)
+
+
+def test_an_unset_path_is_none_and_never_the_current_directory() -> None:
+    assert lax(b'""', Optional[pathlib.Path]) is None
+    assert lax(b'""', pathlib.Path | None) is None
+    assert lax(b'"a/b"', pathlib.Path | None) == pathlib.Path("a/b")
+    assert lax(b'"a/b"', Optional[pathlib.Path]) == pathlib.Path("a/b")
+    assert lax(b'""', pathlib.Path) == pathlib.Path()  # asked for a Path, so a Path
+
+
+def test_types_with_an_empty_form_keep_the_empty_string() -> None:
+    assert lax(b'""', Optional[str]) == ""
+    assert lax(b'""', str | None) == ""
+    assert lax(b'""', Optional[bytes]) == b""
+    assert lax(b'""', bytes | None) == b""
+    assert lax(b'""', Optional[Literal["", "a"]]) == ""
+    assert lax(b'""', Literal["", "a"] | None) == ""
+
+
+def test_the_other_variants_of_such_a_union_still_read_their_text() -> None:
+    address = ipaddress.IPv4Address | None
+    assert lax(b'"10.0.0.1"', address) == ipaddress.IPv4Address("10.0.0.1")
+    assert lax(b'""', address) is None
+    with pytest.raises(ox.ValidationError) as caught:
+        lax(b'"nope"', address)
+    assert [error["code"] for error in caught.value.errors()] == ["format"]
+    ident = uuid.UUID | int | None
+    assert lax(b'"7"', ident) == 7
+    assert lax(b'""', ident) is None
+    assert lax(b'"a8098c1a-f86e-11da-bd1a-00112444be1e"', ident) == uuid.UUID(
+        "a8098c1a-f86e-11da-bd1a-00112444be1e"
+    )
+
+
+def test_the_designed_ambiguities() -> None:
+    assert lax(b'"1234"', int | bytes) == b"\xd7m\xf8"
+    assert lax(b'"1"', int | bytes) == 1
+    thirty_two = b'"' + b"1" * 32 + b'"'
+    assert lax(thirty_two, int | uuid.UUID) == uuid.UUID("1" * 32)
+    assert lax(b'"123"', int | uuid.UUID) == 123
+    assert lax(b'"20240101"', datetime.date | int) == 20240101
+    assert lax(b'"20240101"', datetime.datetime | int) == 20240101
+    assert lax(b'"2024-01-01"', datetime.date | int) == datetime.date(2024, 1, 1)

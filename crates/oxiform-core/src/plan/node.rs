@@ -58,6 +58,9 @@ pub struct UnionPlan {
     pub string: Option<NodeId>,
     pub sequence: Option<NodeId>,
     pub map: Option<NodeId>,
+    /// Lax mode reads an empty string as the `null` variant: there is one, and the `string`
+    /// variant, if any, has no empty form (so `Path | None` reads `""` as `None`, not `.`).
+    pub empty_is_none: bool,
 }
 
 /// Structures told apart by a tag.

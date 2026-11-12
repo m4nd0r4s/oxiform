@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::description::{
-    ChoiceValue, ConversionInput, Description, SequenceKind, StructDescription, TypeDescription,
+    ChoiceValue, Description, SequenceKind, StructDescription, TypeDescription,
 };
 use crate::plan::{ChoiceId, ConversionId, FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
 
@@ -74,16 +74,27 @@ impl Compiler<'_> {
         id
     }
 
-    /// Whether the node can read an empty string as a value of its type (`str`, base64, a
+    /// Whether the node can read an empty string as a value of its type (`str`, `bytes`, a
     /// `Literal` that has `""`), so that lax mode does not read `""` as `None` in front of it.
-    /// A date, a number or a `Decimal` has no empty form: `""` is how a form or an environment
-    /// variable says "not set".
-    fn accepts_empty_text(&self, node: NodeId) -> bool {
+    /// Every other type has no empty form (numbers, `bool`, dates and times, `Decimal`, `UUID`,
+    /// `ZoneInfo`, `Path`, the `ipaddress` classes, `Flag`, containers, models): `""` is how a
+    /// form or an environment variable says "not set".
+    pub(super) fn accepts_empty_text(&self, node: NodeId) -> bool {
         match &self.nodes[node.0 as usize] {
             Node::Any | Node::String(_) | Node::Bytes { .. } => true,
-            Node::Converted(id) => {
-                self.description.conversions[id.index()].input == ConversionInput::String
-            }
+            // `UUID`, `IPv4Address`, `ZoneInfo`, `Path`, `Decimal` and `Flag` have no empty form:
+            // `Path("")` is `.`, which an unset form field must not become.
+            Node::Converted(_)
+            | Node::Bool
+            | Node::None
+            | Node::Integer(_)
+            | Node::Float(_)
+            | Node::Temporal(_)
+            | Node::List { .. }
+            | Node::Tuple(_)
+            | Node::Dict { .. }
+            | Node::Struct(_)
+            | Node::Tagged(_) => false,
             Node::Choice(id) => self.description.choices[id.index()]
                 .values
                 .iter()
@@ -95,16 +106,6 @@ impl Compiler<'_> {
             Node::Untagged(variants) => variants
                 .iter()
                 .any(|(_, node)| self.accepts_empty_text(*node)),
-            Node::Bool
-            | Node::None
-            | Node::Integer(_)
-            | Node::Float(_)
-            | Node::Temporal(_)
-            | Node::List { .. }
-            | Node::Tuple(_)
-            | Node::Dict { .. }
-            | Node::Struct(_)
-            | Node::Tagged(_) => false,
         }
     }
 

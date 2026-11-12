@@ -99,6 +99,10 @@ impl Compiler<'_> {
             }
         }
         plan.map = self.compile_map_variants(&maps, location)?;
+        plan.empty_is_none = plan.null.is_some()
+            && plan
+                .string
+                .is_none_or(|string| !self.accepts_empty_text(string));
         Ok(Node::Union(Box::new(plan)))
     }
 
