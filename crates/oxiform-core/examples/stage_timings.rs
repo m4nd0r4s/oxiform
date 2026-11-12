@@ -8,7 +8,7 @@ use oxiform_core::compiler::compile;
 use oxiform_core::description::{Description, TypeDescription};
 use oxiform_core::events::{Event, EventReader};
 use oxiform_core::executor::execute;
-use oxiform_core::limits::Limits;
+use oxiform_core::options::Options;
 use oxiform_core::plan::{ChoiceId, ConversionId, Plan, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_formats::json::JsonReader;
@@ -81,7 +81,7 @@ fn read_only(input: &str) {
 
 fn read_and_execute(plan: &Plan, input: &str) {
     let mut reader = JsonReader::new(input, 128);
-    execute(plan, &mut reader, &mut NullSink, &Limits::default()).expect("the document is valid");
+    execute(plan, &mut reader, &mut NullSink, &Options::default()).expect("the document is valid");
 }
 
 fn time(label: &str, iterations: u32, mut run: impl FnMut()) {

@@ -4,23 +4,42 @@ use std::cmp::Ordering;
 
 use super::numbers::{
     Integer, compare_float, compare_integer, describe_bound, digit_count, is_integer_text,
-    parse_integer,
+    is_lax_float_text, lax_bool_text, lax_integer_text, parse_integer,
 };
 use super::{Executor, Step, Stop, input_preview};
 use crate::description::Bound;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
+use crate::options::Mode;
 use crate::plan::{LengthRange, NumberChecks, StringChecks};
 use crate::sink::Sink;
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn integer(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
-        let Event::Number(text) = event else {
-            return self.mismatch("int", event);
-        };
-        if !is_integer_text(text) {
-            return self.mismatch("int", event);
+        match event {
+            Event::Number(text) if is_integer_text(text) => self.integer_text(checks, text),
+            other => self.integer_from_other(checks, other),
         }
+    }
+
+    /// An integer given as anything but integer text: an error, or in lax mode a string or a
+    /// number such as `42.0` that holds one.
+    #[cold]
+    fn integer_from_other(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
+        if self.mode == Mode::Lax {
+            let text = match &event {
+                Event::Number(text) => Some(*text),
+                Event::String(text) => Some(text.as_ref()),
+                _ => None,
+            };
+            if let Some(integer) = text.and_then(lax_integer_text) {
+                return self.integer_text(checks, integer);
+            }
+        }
+        self.mismatch("int", event)
+    }
+
+    fn integer_text(&mut self, checks: &NumberChecks, text: &str) -> Step<S> {
         let value = self.read_integer(text)?;
         let input = || Some(text.to_owned());
         let mut valid = self.check_range(checks, |bound| compare_integer(value, bound), input)?;
@@ -47,9 +66,25 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 
     pub(crate) fn float(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
-        let Event::Number(text) = event else {
-            return self.mismatch("float", event);
-        };
+        match event {
+            Event::Number(text) => self.float_text(checks, text),
+            other => self.float_from_other(checks, other),
+        }
+    }
+
+    /// A float given as anything but a number: an error, or in lax mode a string that holds one.
+    #[cold]
+    fn float_from_other(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
+        if self.mode == Mode::Lax
+            && let Event::String(text) = &event
+            && is_lax_float_text(text)
+        {
+            return self.float_text(checks, text);
+        }
+        self.mismatch("float", event)
+    }
+
+    fn float_text(&mut self, checks: &NumberChecks, text: &str) -> Step<S> {
         let Some(value) = self.read_float(text)? else {
             return Ok(None);
         };
@@ -62,6 +97,25 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             return Ok(None);
         }
         self.emit(|sink| sink.float(value))
+    }
+
+    /// A boolean: `true` or `false`, and in lax mode the words that mean them (`yes`, `0`).
+    pub(crate) fn boolean(&mut self, event: Event<'input>) -> Step<S> {
+        match event {
+            Event::Bool(value) => self.emit(|sink| sink.bool(value)),
+            other => self.boolean_from_other(other),
+        }
+    }
+
+    #[cold]
+    fn boolean_from_other(&mut self, event: Event<'input>) -> Step<S> {
+        if self.mode == Mode::Lax
+            && let Event::String(text) = &event
+            && let Some(value) = lax_bool_text(text)
+        {
+            return self.emit(|sink| sink.bool(value));
+        }
+        self.mismatch("bool", event)
     }
 
     pub(crate) fn string(&mut self, checks: &StringChecks, event: Event<'input>) -> Step<S> {

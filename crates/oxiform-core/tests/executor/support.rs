@@ -7,6 +7,7 @@ use oxiform_core::description::{
 use oxiform_core::executor::{Failure, execute};
 use oxiform_core::issues::{Issue, Report};
 use oxiform_core::limits::Limits;
+use oxiform_core::options::{Mode, Options};
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_core::temporal::Temporal;
@@ -162,9 +163,21 @@ pub fn decode_with(
     input: &str,
     limits: &Limits,
 ) -> Result<Value, Report> {
+    let options = Options {
+        limits: *limits,
+        ..Options::default()
+    };
+    decode_options(description, input, &options)
+}
+
+pub fn decode_options(
+    description: &Description,
+    input: &str,
+    options: &Options,
+) -> Result<Value, Report> {
     let plan = compile(description).expect("the description compiles");
-    let mut reader = JsonReader::new(input, limits.max_depth);
-    match execute(&plan, &mut reader, &mut ValueSink, limits) {
+    let mut reader = JsonReader::new(input, options.limits.max_depth);
+    match execute(&plan, &mut reader, &mut ValueSink, options) {
         Ok(value) => Ok(value),
         Err(Failure::Invalid(report)) => Err(report),
         Err(Failure::Sink(never)) => match never {},
@@ -173,6 +186,15 @@ pub fn decode_with(
 
 pub fn decode(description: &Description, input: &str) -> Result<Value, Report> {
     decode_with(description, input, &Limits::default())
+}
+
+/// Decodes in lax mode, as text that comes from env, forms and query strings is read.
+pub fn decode_lax(description: &Description, input: &str) -> Result<Value, Report> {
+    let options = Options {
+        mode: Mode::Lax,
+        ..Options::default()
+    };
+    decode_options(description, input, &options)
 }
 
 pub fn issues(description: &Description, input: &str) -> Vec<Issue> {

@@ -32,7 +32,12 @@ pub enum Node {
         values: NodeId,
         length: LengthRange,
     },
-    Optional(NodeId),
+    /// `T | None`. With `empty_is_none`, lax mode reads an empty string as `None`: set when the
+    /// type of `inner` does not accept a string.
+    Optional {
+        inner: NodeId,
+        empty_is_none: bool,
+    },
     Struct(StructId),
     Union(Box<UnionPlan>),
     Tagged(Box<TaggedPlan>),

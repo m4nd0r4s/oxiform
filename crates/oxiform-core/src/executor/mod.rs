@@ -14,6 +14,7 @@ mod unions;
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
 use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
 use crate::limits::Limits;
+use crate::options::{Mode, Options};
 use crate::plan::{Node, NodeId, Plan};
 use crate::sink::Sink;
 
@@ -34,7 +35,7 @@ pub fn execute<'input, R, S>(
     plan: &Plan,
     reader: &mut R,
     sink: &mut S,
-    limits: &Limits,
+    options: &Options,
 ) -> Result<S::Value, Failure<S::Error>>
 where
     R: EventReader<'input>,
@@ -45,7 +46,8 @@ where
         plan,
         reader,
         sink,
-        limits,
+        limits: &options.limits,
+        mode: options.mode,
         issues: Vec::new(),
     };
     let outcome = executor.run();
@@ -83,6 +85,7 @@ pub(crate) struct Executor<'run, 'input, R, S> {
     reader: &'run mut R,
     sink: &'run mut S,
     limits: &'run Limits,
+    mode: Mode,
     issues: Vec<Issue>,
 }
 
@@ -100,10 +103,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let plan = self.plan;
         match plan.node(node_id) {
             Node::Any => self.any(event),
-            Node::Bool => match event {
-                Event::Bool(value) => self.emit(|sink| sink.bool(value)),
-                other => self.mismatch("bool", other),
-            },
+            Node::Bool => self.boolean(event),
             Node::None => match event {
                 Event::Null => self.emit(Sink::none),
                 other => self.mismatch("None", other),
@@ -122,8 +122,16 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             Node::Tuple(items) => self.tuple(items, event),
             Node::Choice(choice) => self.choice(*choice, event),
             Node::Dict { values, length } => self.dict(Some(*values), *length, event),
-            Node::Optional(inner) => match event {
+            Node::Optional {
+                inner,
+                empty_is_none,
+            } => match event {
                 Event::Null => self.emit(Sink::none),
+                Event::String(ref text)
+                    if *empty_is_none && text.is_empty() && self.mode == Mode::Lax =>
+                {
+                    self.emit(Sink::none)
+                }
                 other => self.value(*inner, other),
             },
             Node::Struct(structure) => self.structure(*structure, event),

@@ -1,10 +1,11 @@
 //! Unions: a variant chosen by the kind of value, by a tag, or by trying each in order.
 
-use super::numbers::is_integer_text;
+use super::numbers::{is_integer_text, is_lax_float_text, lax_bool_text, lax_integer_text};
 use super::{Executor, Step, Stop, input_preview};
 use crate::description::TagMode;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode, PathSegment};
+use crate::options::Mode;
 use crate::plan::{NodeId, StructId, TaggedPlan, UnionPlan};
 use crate::sink::Sink;
 
@@ -18,7 +19,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 (_, Some(float)) => Some(float),
                 (integer, None) => integer,
             },
-            Event::String(_) => union.string,
+            Event::String(text) => match union.string {
+                None if self.mode == Mode::Lax => lax_variant(union, text),
+                variant => variant,
+            },
             Event::SequenceStart => union.sequence,
             Event::MapStart => union.map,
             Event::Key(_) | Event::MapEnd | Event::SequenceEnd | Event::End => None,
@@ -311,6 +315,25 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             allowed(tagged),
         )
     }
+}
+
+/// The variant that lax mode reads a string as when there is no string variant: `None` for an
+/// empty string, then the first of integer, float and bool that the text is valid for.
+#[cold]
+fn lax_variant(union: &UnionPlan, text: &str) -> Option<NodeId> {
+    if text.is_empty() && union.null.is_some() {
+        return union.null;
+    }
+    if lax_integer_text(text).is_some() && union.integer.is_some() {
+        return union.integer;
+    }
+    if is_lax_float_text(text) && union.float.is_some() {
+        return union.float;
+    }
+    if lax_bool_text(text).is_some() {
+        return union.bool;
+    }
+    None
 }
 
 fn allowed(tagged: &TaggedPlan) -> Vec<(&'static str, ContextValue)> {

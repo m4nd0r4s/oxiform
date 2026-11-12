@@ -1,10 +1,11 @@
 //! `Literal` and `Enum`: a value from a fixed set.
 
-use super::numbers::{Integer, is_integer_text, parse_integer};
+use super::numbers::{Integer, is_integer_text, lax_integer_text, parse_integer};
 use super::{Executor, Step, input_preview};
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
-use crate::plan::ChoiceId;
+use crate::options::Mode;
+use crate::plan::{ChoiceId, ChoicePlan};
 use crate::sink::Sink;
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
@@ -20,6 +21,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 Integer::Big(_) => None,
             },
             _ => None,
+        };
+        let index = match index {
+            None if self.mode == Mode::Lax => lax_index(choice, &event),
+            other => other,
         };
         if let Some(index) = index {
             return self.emit(|sink| sink.choice(id, index));
@@ -37,5 +42,19 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         )?;
         self.skip_value(event)?;
         Ok(None)
+    }
+}
+
+/// The index of the integer that lax mode finds in a string or a number such as `1.0`.
+#[cold]
+fn lax_index(choice: &ChoicePlan, event: &Event<'_>) -> Option<u32> {
+    let text = match event {
+        Event::String(text) => text.as_ref(),
+        Event::Number(text) => text,
+        _ => return None,
+    };
+    match parse_integer(lax_integer_text(text)?) {
+        Integer::Small(number) => choice.integers.get(&number).copied(),
+        Integer::Big(_) => None,
     }
 }

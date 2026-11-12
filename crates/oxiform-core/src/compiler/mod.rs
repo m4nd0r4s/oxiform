@@ -8,7 +8,9 @@ mod unions;
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::description::{Description, SequenceKind, StructDescription, TypeDescription};
+use crate::description::{
+    ChoiceValue, ConversionInput, Description, SequenceKind, StructDescription, TypeDescription,
+};
 use crate::plan::{ChoiceId, ConversionId, FieldPlan, Node, NodeId, Plan, StructId, StructPlan};
 
 /// A declaration that cannot be compiled.
@@ -70,6 +72,33 @@ impl Compiler<'_> {
         let id = NodeId(u32::try_from(self.nodes.len()).expect("a plan has fewer than 2^32 nodes"));
         self.nodes.push(node);
         id
+    }
+
+    /// Whether the node reads a string as itself or as text it converts (a date, a `Decimal`,
+    /// base64), so that an empty string is a value of the type and not `None`.
+    fn accepts_text(&self, node: NodeId) -> bool {
+        match &self.nodes[node.0 as usize] {
+            Node::Any | Node::String(_) | Node::Bytes { .. } | Node::Temporal(_) => true,
+            Node::Converted(id) => {
+                self.description.conversions[id.index()].input != ConversionInput::Integer
+            }
+            Node::Choice(id) => self.description.choices[id.index()]
+                .values
+                .iter()
+                .any(|value| matches!(value, ChoiceValue::String(_))),
+            Node::Optional { inner, .. } => self.accepts_text(*inner),
+            Node::Union(union) => union.string.is_some(),
+            Node::Untagged(variants) => variants.iter().any(|(_, node)| self.accepts_text(*node)),
+            Node::Bool
+            | Node::None
+            | Node::Integer(_)
+            | Node::Float(_)
+            | Node::List { .. }
+            | Node::Tuple(_)
+            | Node::Dict { .. }
+            | Node::Struct(_)
+            | Node::Tagged(_) => false,
+        }
     }
 
     fn compile_struct(
@@ -205,7 +234,13 @@ impl Compiler<'_> {
                 let values = self.compile_type(values, location)?;
                 Node::Dict { values, length }
             }
-            TypeDescription::Optional(inner) => Node::Optional(self.compile_type(inner, location)?),
+            TypeDescription::Optional(inner) => {
+                let inner = self.compile_type(inner, location)?;
+                Node::Optional {
+                    inner,
+                    empty_is_none: !self.accepts_text(inner),
+                }
+            }
             TypeDescription::Struct(index) => {
                 if *index >= self.description.structs.len() {
                     return Err(declaration_error(

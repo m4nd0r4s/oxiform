@@ -4,11 +4,12 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
-use super::numbers::is_integer_text;
+use super::numbers::{is_integer_text, lax_integer_text};
 use super::{Executor, Step, Stop, input_preview};
 use crate::description::ConversionInput;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
+use crate::options::Mode;
 use crate::plan::{ConversionId, LengthRange};
 use crate::sink::Sink;
 
@@ -39,6 +40,12 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn converted(&mut self, id: ConversionId, event: Event<'input>) -> Step<S> {
         let plan = self.plan;
         let conversion = plan.conversion(id);
+        let lax_integer = match &event {
+            _ if conversion.input != ConversionInput::Integer || self.mode != Mode::Lax => None,
+            Event::String(text) => lax_integer_text(text),
+            Event::Number(text) => lax_integer_text(text),
+            _ => None,
+        };
         let raw = match (conversion.input, &event) {
             (ConversionInput::String, Event::String(text)) => {
                 self.check_string_size(text)?;
@@ -60,7 +67,13 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 }
                 self.emit(|sink| sink.string(text))?
             }
-            _ => return self.mismatch(&conversion.name, event),
+            _ => {
+                let Some(integer) = lax_integer else {
+                    return self.mismatch(&conversion.name, event);
+                };
+                let value = self.read_integer(integer)?;
+                self.emit_integer(value)?
+            }
         };
         let Some(raw) = raw else {
             return Ok(None);

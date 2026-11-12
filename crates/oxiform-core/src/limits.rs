@@ -19,18 +19,21 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self {
-            max_bytes: 64 * 1024 * 1024,
-            max_depth: 128,
-            max_items: 1_000_000,
-            max_str_len: 16 * 1024 * 1024,
-            max_int_digits: 4300,
-            max_errors: 100,
-        }
+        Self::DEFAULT
     }
 }
 
 impl Limits {
+    /// The limits that apply when none are given.
+    pub const DEFAULT: Self = Self {
+        max_bytes: 64 * 1024 * 1024,
+        max_depth: 128,
+        max_items: 1_000_000,
+        max_str_len: 16 * 1024 * 1024,
+        max_int_digits: 4300,
+        max_errors: 100,
+    };
+
     /// No size limits, for trusted input. The number of errors collected stays bounded.
     pub fn none() -> Self {
         Self {
@@ -39,7 +42,7 @@ impl Limits {
             max_items: usize::MAX,
             max_str_len: usize::MAX,
             max_int_digits: usize::MAX,
-            max_errors: Self::default().max_errors,
+            max_errors: Self::DEFAULT.max_errors,
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod events;
 pub mod executor;
 pub mod issues;
 pub mod limits;
+pub mod options;
 pub mod plan;
 pub mod sink;
 pub mod temporal;
