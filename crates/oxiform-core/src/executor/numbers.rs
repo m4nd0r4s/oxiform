@@ -1,5 +1,6 @@
 //! Number text: integers of any size, and comparisons with declared limits.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::description::Bound;
@@ -18,10 +19,34 @@ pub(crate) fn is_integer_text(text: &str) -> bool {
     !text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }
 
-/// Number of digits, without the sign.
+/// Number of digits that count against `max_int_digits`: without the sign and without leading
+/// zeros (`"000042"` has two), but at least one (`"0"`).
 #[inline]
 pub(crate) fn digit_count(text: &str) -> usize {
-    text.trim_start_matches(['-', '+']).len()
+    let digits = text.trim_start_matches(['-', '+']);
+    digits
+        .trim_start_matches('0')
+        .len()
+        .max(1)
+        .min(digits.len())
+}
+
+/// `text` without the zeros in front of its digits (`"-007"` is `"-7"`), as Python's `int`
+/// counts them toward its own digit limit.
+pub(crate) fn without_leading_zeros(text: &str) -> Cow<'_, str> {
+    let (sign, digits) = match text.strip_prefix(['-', '+']) {
+        Some(digits) => (&text[..1], digits),
+        None => ("", text),
+    };
+    let significant = digits.trim_start_matches('0');
+    if significant.len() == digits.len() || significant.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    if sign.is_empty() {
+        Cow::Borrowed(significant)
+    } else {
+        Cow::Owned(format!("{sign}{significant}"))
+    }
 }
 
 #[inline]
@@ -30,7 +55,8 @@ pub(crate) fn parse_integer(text: &str) -> Integer<'_> {
 }
 
 /// The integer that lax mode reads from `text`: an optional sign and digits, and optionally a
-/// fraction of zeros (`42`, `-7`, `+3`, `42.0`). The digits may have leading zeros. Anything
+/// fraction of zeros (`42`, `-7`, `+3`, `42.0`). The digits may have leading zeros, which do
+/// not count as digits. Anything
 /// that would lose information, such as `4.5` or `1e3`, is not an integer.
 pub(crate) fn lax_integer_text(text: &str) -> Option<&str> {
     let (integer, fraction) = match text.split_once('.') {
@@ -123,7 +149,41 @@ pub(crate) fn describe_bound(bound: Bound) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_lax_float_text, lax_bool_text, lax_integer_text};
+    use super::{
+        digit_count, is_lax_float_text, lax_bool_text, lax_integer_text, without_leading_zeros,
+    };
+
+    #[test]
+    fn counts_the_digits_of_the_value() {
+        for (text, count) in [
+            ("0", 1),
+            ("-0", 1),
+            ("000", 1),
+            ("7", 1),
+            ("007", 1),
+            ("-0012", 2),
+            ("+120", 3),
+            ("1000", 4),
+            ("-123456789012345678901234567890", 30),
+        ] {
+            assert_eq!(digit_count(text), count, "{text}");
+        }
+    }
+
+    #[test]
+    fn strips_leading_zeros_keeping_the_sign() {
+        for (text, stripped) in [
+            ("7", "7"),
+            ("0", "0"),
+            ("000", "000"),
+            ("007", "7"),
+            ("-007", "-7"),
+            ("+0012", "12"),
+            ("-100", "-100"),
+        ] {
+            assert_eq!(without_leading_zeros(text), stripped, "{text}");
+        }
+    }
 
     #[test]
     fn reads_lax_integers_without_losing_information() {

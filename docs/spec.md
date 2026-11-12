@@ -634,12 +634,12 @@ oxiform assumes the input is not trusted: limits are on by default (D4) and YAML
 | `max_depth` | 128 levels, at most 512 | Stack overflow with deep nesting |
 | `max_items` | 1,000,000 per collection | Huge arrays and objects |
 | `max_str_len` | 16 MiB per string | Giant strings |
-| `max_int_digits` | 4,300 digits (same as CPython) | Huge integers that block the CPU |
+| `max_int_digits` | 4,300 digits (same as CPython), not counting leading zeros | Huge integers that block the CPU |
 | `max_yaml_aliases` | 1,000 alias expansions, counting nested ones | "Billion laughs" in YAML |
 
 The number of collected errors has a separate limit: `max_errors=100` in each call (section 4.7).
 
-**The depth ceiling.** The engine reads one nesting level per call, about 600 bytes of stack, so `max_depth` cannot be unbounded: it is capped at `ox.Limits.MAX_DEPTH` (512 levels, which fits the 512 KiB stack of a macOS thread with room to spare). `ox.Limits(max_depth=n)` with a larger `n` is the ceiling (`limits.max_depth` says so), and so is `ox.Limits.none()`; nesting deeper than that is `limit_exceeded` with `ctx.limit == "max_depth"` and `ctx.value == 512`, never a crash. No real document nests that deep; a deeper one is an attack. Sizes are whole numbers of at least 0: a negative number or one above 2⁶⁴ − 1 is a `ValueError` that points at `ox.Limits.none()`.
+**The depth ceiling.** The engine reads one nesting level per call, about 600 bytes of stack, so `max_depth` cannot be unbounded: it is capped at `ox.Limits.MAX_DEPTH` (512 levels, which fits the 512 KiB stack of a macOS thread with room to spare). `ox.Limits(max_depth=n)` with a larger `n` is the ceiling (`limits.max_depth` says so), and so is `ox.Limits.none()`; nesting deeper than that is `limit_exceeded` with `ctx.limit == "max_depth"` and `ctx.value == 512`, never a crash. No real document nests that deep; a deeper one is an attack. Integers have a ceiling too: CPython refuses to build an `int` of more digits than `sys.get_int_max_str_digits()` (0 turns that off), and oxiform does not let that surface as a raw `ValueError`. Whatever `max_int_digits` says, an integer with more digits than Python accepts is `limit_exceeded` with `ctx.limit == "max_int_digits"` and `ctx.value` the limit of Python, also with `ox.Limits.none()`; raise it with `sys.set_int_max_str_digits`. Leading zeros (lax mode reads `"000042"`) are not digits for either limit. Sizes are whole numbers of at least 0: a negative number or one above 2⁶⁴ − 1 is a `ValueError` that points at `ox.Limits.none()`.
 
 `ox.Limits` is an immutable value with the fields above, all keyword-only, plus `ox.Limits.none()`. Every decode call takes `limits=`; the size of the input is checked before it is parsed, and every other limit while it is read.
 

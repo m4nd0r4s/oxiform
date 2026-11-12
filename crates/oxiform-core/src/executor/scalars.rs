@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use super::numbers::{
     Integer, compare_float, compare_integer, describe_bound, digit_count, is_integer_text,
-    is_lax_float_text, lax_bool_text, lax_integer_text, parse_integer,
+    is_lax_float_text, lax_bool_text, lax_integer_text, parse_integer, without_leading_zeros,
 };
 use super::{Executor, Step, Stop, input_preview};
 use crate::description::Bound;
@@ -167,11 +167,23 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         &mut self,
         text: &'text str,
     ) -> Result<Integer<'text>, Stop<S::Error>> {
-        if digit_count(text) > self.limits.max_int_digits {
+        let digits = digit_count(text);
+        if digits > self.limits.max_int_digits {
             return Err(self.limit_exceeded(
                 "max_int_digits",
                 self.limits.max_int_digits,
                 "the integer",
+            ));
+        }
+        // An integer of at most 18 digits fits 64 bits and never reaches the sink's own limit.
+        if digits > 18
+            && let Some((limit, hint)) = self.sink.integer_digit_limit()
+            && digits > limit
+        {
+            return Err(self.limit_exceeded(
+                "max_int_digits",
+                limit,
+                &format!("the integer (the digit limit of this runtime; {hint})"),
             ));
         }
         Ok(parse_integer(text))
@@ -197,7 +209,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn emit_integer(&mut self, value: Integer<'_>) -> Step<S> {
         match value {
             Integer::Small(small) => self.emit(|sink| sink.integer(small)),
-            Integer::Big(digits) => self.emit(|sink| sink.big_integer(digits)),
+            Integer::Big(digits) => {
+                let digits = without_leading_zeros(digits);
+                self.emit(|sink| sink.big_integer(&digits))
+            }
         }
     }
 

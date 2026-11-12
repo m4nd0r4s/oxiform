@@ -16,6 +16,11 @@ pub trait Sink {
     fn integer(&mut self, value: i64) -> Result<Self::Value, Self::Error>;
     /// An integer outside the 64-bit range, as decimal digits with an optional sign.
     fn big_integer(&mut self, digits: &str) -> Result<Self::Value, Self::Error>;
+    /// The most digits `big_integer` can build, with what to do about it, when the sink has a
+    /// limit of its own (CPython does). It applies even when the run has no digit limit.
+    fn integer_digit_limit(&self) -> Option<(usize, &'static str)> {
+        None
+    }
     fn float(&mut self, value: f64) -> Result<Self::Value, Self::Error>;
     fn string(&mut self, value: &str) -> Result<Self::Value, Self::Error>;
     /// Bytes decoded from the input; a mutable `bytearray` in Python when `mutable`.

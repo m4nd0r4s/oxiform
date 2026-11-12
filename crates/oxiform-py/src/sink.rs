@@ -40,6 +40,18 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         self.py.get_type::<PyInt>().call1((digits,))
     }
 
+    /// CPython refuses to build an `int` from more digits than `sys.get_int_max_str_digits()`,
+    /// 0 meaning no limit. That is a `ValueError` from `int()`, so it is caught before.
+    fn integer_digit_limit(&self) -> Option<(usize, &'static str)> {
+        let limit: usize = self
+            .py
+            .import("sys")
+            .and_then(|sys| sys.call_method0("get_int_max_str_digits"))
+            .and_then(|limit| limit.extract())
+            .ok()?;
+        (limit > 0).then_some((limit, "raise it with sys.set_int_max_str_digits"))
+    }
+
     fn float(&mut self, value: f64) -> PyResult<Self::Value> {
         Ok(PyFloat::new(self.py, value).into_any())
     }

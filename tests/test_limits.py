@@ -1,9 +1,17 @@
+import enum
+import sys
 import threading
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 import oxiform as ox
+
+
+class Perm(enum.IntFlag):
+    READ = 1
+    WRITE = 2
 
 
 def codes(error: ox.ValidationError) -> list[str]:
@@ -148,3 +156,60 @@ def test_max_errors_stops_collection() -> None:
         ox.json.decode(b'["a", "b", "c"]', list[int], max_errors=2)
     assert len(caught.value.errors()) == 2
     assert caught.value.truncated
+
+
+@pytest.fixture
+def default_int_digits() -> Iterator[int]:
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    yield 4300
+    sys.set_int_max_str_digits(previous)
+
+
+@pytest.mark.parametrize("mode", ["strict", "lax"])
+def test_none_still_stops_at_the_digit_limit_of_python(mode: str, default_int_digits: int) -> None:
+    digits = "1" * (default_int_digits + 1)
+    raw = digits.encode() if mode == "strict" else f'"{digits}"'.encode()
+    with pytest.raises(ox.DecodeError) as caught:
+        ox.json.decode(raw, int, mode=mode, limits=ox.Limits.none())  # type: ignore[arg-type]
+    error = caught.value.errors()[0]
+    assert error["code"] == "limit_exceeded"
+    assert error["ctx"] == {"limit": "max_int_digits", "value": default_int_digits}
+    assert "sys.set_int_max_str_digits" in error["message"]
+    assert ox.json.decode(
+        raw[:-1] if mode == "strict" else raw[:-2] + b'"',
+        int,
+        mode=mode,  # type: ignore[arg-type]
+        limits=ox.Limits.none(),
+    ) == int("1" * default_int_digits)
+
+
+def test_python_integers_that_are_converted_obey_the_same_limit(default_int_digits: int) -> None:
+    with pytest.raises(ox.DecodeError):
+        ox.json.decode(b"1" * (default_int_digits + 1), Perm, limits=ox.Limits.none())
+    with pytest.raises(ox.DecodeError):
+        ox.json.decode(b"[" + b"1" * (default_int_digits + 1) + b"]", Any, limits=ox.Limits.none())
+
+
+def test_the_digit_limit_follows_what_python_is_set_to(default_int_digits: int) -> None:
+    sys.set_int_max_str_digits(0)
+    big = "9" * 10_000
+    assert ox.json.decode(big.encode(), int, limits=ox.Limits.none()) == int(big)
+    sys.set_int_max_str_digits(1000)
+    with pytest.raises(ox.DecodeError) as caught:
+        ox.json.decode(b"9" * 1001, int, limits=ox.Limits.none())
+    assert caught.value.errors()[0]["ctx"]["value"] == 1000
+
+
+def test_leading_zeros_are_not_digits(default_int_digits: int) -> None:
+    limits = ox.Limits(max_int_digits=5)
+    for text, value in [("000001", 1), ("-000012345", -12345), ("+00000", 0), ("0", 0)]:
+        assert ox.json.decode(f'"{text}"'.encode(), int, mode="lax", limits=limits) == value
+    with pytest.raises(ox.DecodeError):
+        ox.json.decode(b'"123456"', int, mode="lax", limits=limits)
+    with pytest.raises(ox.DecodeError):
+        ox.json.decode(b'"-0123456"', int, mode="lax", limits=limits)
+    # Python counts the zeros, so they are taken off before the number is built.
+    padded = "0" * 10_000 + "7" * 30
+    assert ox.json.decode(f'"{padded}"'.encode(), int, mode="lax") == int("7" * 30)
+    assert ox.json.decode(f'"-{padded}"'.encode(), int, mode="lax") == -int("7" * 30)
