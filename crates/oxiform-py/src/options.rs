@@ -138,12 +138,12 @@ pub(crate) fn decode_options(
             max_items: limits.max_items,
             max_str_len: limits.max_str_len,
             max_int_digits: limits.max_int_digits,
-            max_errors,
         },
-        None => Limits {
-            max_errors,
-            ..Limits::DEFAULT
-        },
+        None => Limits::DEFAULT,
     };
-    Ok(Options { mode, limits })
+    Ok(Options {
+        mode,
+        limits,
+        max_errors,
+    })
 }

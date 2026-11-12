@@ -643,7 +643,7 @@ oxiform assumes the input is not trusted: limits are on by default (D4) and YAML
 | `max_int_digits` | 4,300 digits (same as CPython), not counting leading zeros | Huge integers that block the CPU |
 | `max_yaml_aliases` | 1,000 alias expansions, counting nested ones | "Billion laughs" in YAML |
 
-The number of collected errors has a separate limit: `max_errors=100` in each call (section 4.7).
+The number of collected errors is not an `ox.Limits` field: `max_errors=100` is an option of each call (section 4.7), next to `mode`, because it shapes the report and protects nothing, and a caller who turns the limits off with `ox.Limits.none()` still gets a bounded report. In the engine, `Options { mode, limits, max_errors }` is what a run takes.
 
 **The depth ceiling.** The engine reads one nesting level per call, about 600 bytes of stack, so `max_depth` cannot be unbounded: it is capped at `ox.Limits.MAX_DEPTH` (512 levels, which fits the 512 KiB stack of a macOS thread with room to spare). `ox.Limits(max_depth=n)` with a larger `n` is the ceiling (`limits.max_depth` says so), and so is `ox.Limits.none()`; nesting deeper than that is `limit_exceeded` with `ctx.limit == "max_depth"` and `ctx.value == 512`, never a crash. No real document nests that deep; a deeper one is an attack. Integers have a ceiling too: CPython refuses to build an `int` of more digits than `sys.get_int_max_str_digits()` (0 turns that off), and oxiform does not let that surface as a raw `ValueError`. Whatever `max_int_digits` says, an integer with more digits than Python accepts is `limit_exceeded` with `ctx.limit == "max_int_digits"` and `ctx.value` the limit of Python, also with `ox.Limits.none()`; raise it with `sys.set_int_max_str_digits`. Leading zeros (lax mode reads `"000042"`) are not digits for either limit. Sizes are whole numbers of at least 0: a negative number or one above 2⁶⁴ − 1 is a `ValueError` that points at `ox.Limits.none()`.
 
@@ -1048,6 +1048,7 @@ The gate (≤ 1.1×) is not met. Following this section's rule, the value propos
 
 ### 12.4 Next steps
 
+- [ ] Before the embedding ABI (the `decode(plan, bytes, mode, limits, context)` entry points of a host such as Douro) is frozen: make its options struct size-prefixed (`size` first, fields appended only, a consumer checks `size` before reading a field it was built after), keep `max_errors` in that struct next to `mode` and not in the limits (as in `Options`), and fold the per-call `unknown=` override into it, so that neither needs a new ABI major
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
 - [x] Create the repository with the structure from section 12.2
 - [x] Phase 0 prototype (section 12.2)

@@ -71,6 +71,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             sink: &mut *self.sink,
             limits: self.limits,
             mode: self.mode,
+            max_errors: self.max_errors,
             issues: Vec::new(),
         };
         let outcome = read(&mut nested, events[0].clone());
@@ -94,7 +95,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     /// Adds issues found while reading recorded events.
     pub(crate) fn absorb(&mut self, issues: Vec<Issue>) -> Result<(), Stop<S::Error>> {
         self.issues.extend(issues);
-        if self.issues.len() >= self.limits.max_errors.max(1) {
+        if self.issues.len() >= self.max_errors {
             return Err(Stop::TooManyErrors);
         }
         Ok(())

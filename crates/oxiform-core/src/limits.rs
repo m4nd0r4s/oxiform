@@ -1,4 +1,5 @@
-//! Limits that protect against hostile input. All are on by default.
+//! Limits that protect against hostile input. All are on by default. The number of issues
+//! collected is not one of them: it is `Options::max_errors`, a choice about reporting.
 
 /// Limits of one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,8 +14,6 @@ pub struct Limits {
     pub max_str_len: usize,
     /// Digits per integer, as in CPython.
     pub max_int_digits: usize,
-    /// Issues collected before stopping.
-    pub max_errors: usize,
 }
 
 impl Default for Limits {
@@ -31,7 +30,6 @@ impl Limits {
         max_items: 1_000_000,
         max_str_len: 16 * 1024 * 1024,
         max_int_digits: 4300,
-        max_errors: 100,
     };
 
     /// The most nesting levels any run reads, whatever `max_depth` says. The executor reads one
@@ -41,8 +39,7 @@ impl Limits {
     pub const DEPTH_CEILING: usize = 512;
 
     /// No size limits, for trusted input, except that nesting stops at [`Limits::DEPTH_CEILING`]
-    /// and integers keep the digit limit of the sink (CPython has its own). The number of
-    /// errors collected stays bounded.
+    /// and integers keep the digit limit of the sink (CPython has its own).
     pub fn none() -> Self {
         Self {
             max_bytes: usize::MAX,
@@ -50,7 +47,6 @@ impl Limits {
             max_items: usize::MAX,
             max_str_len: usize::MAX,
             max_int_digits: usize::MAX,
-            max_errors: Self::DEFAULT.max_errors,
         }
     }
 }

@@ -48,6 +48,7 @@ where
         sink,
         limits: &options.limits,
         mode: options.mode,
+        max_errors: options.max_errors.max(1),
         issues: Vec::new(),
     };
     let outcome = executor.run();
@@ -86,6 +87,8 @@ pub(crate) struct Executor<'run, 'input, R, S> {
     sink: &'run mut S,
     limits: &'run Limits,
     mode: Mode,
+    /// At least 1.
+    max_errors: usize,
     issues: Vec<Issue>,
 }
 
@@ -182,7 +185,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             input,
             context,
         });
-        if self.issues.len() >= self.limits.max_errors.max(1) {
+        if self.issues.len() >= self.max_errors {
             return Err(Stop::TooManyErrors);
         }
         Ok(())

@@ -14,12 +14,12 @@ fn list_of_integers() -> TypeDescription {
 
 #[test]
 fn stops_at_the_maximum_number_of_errors() {
-    let limits = Limits {
+    let options = Options {
         max_errors: 2,
-        ..Limits::default()
+        ..Options::default()
     };
     let report =
-        decode_with(&plain(list_of_integers()), r#"["a", "b", "c"]"#, &limits).unwrap_err();
+        decode_options(&plain(list_of_integers()), r#"["a", "b", "c"]"#, &options).unwrap_err();
     assert_eq!(report.issues.len(), 2);
     assert!(report.truncated);
     assert_eq!(report.kind, ReportKind::Validation);
@@ -94,6 +94,7 @@ fn checks_the_size_of_every_string_that_is_read() {
     let options = Options {
         mode: Mode::Lax,
         limits,
+        ..Options::default()
     };
     let cases = [
         (integer(), r#""0000042""#),
