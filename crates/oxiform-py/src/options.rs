@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 
 /// `ox.Limits`: what protects a decode against hostile input (section 7 of the spec).
 ///
-/// Every size is a whole number of at least 0. `max_depth` is at most `Limits.MAX_DEPTH` (512):
+/// Every size is a whole number of at least 0. `max_depth` is at most `Limits.MAX_DEPTH` (128, the default):
 /// the reader keeps that ceiling whatever it is given, so that deeply nested input is an error
 /// and never a crash, and `Limits.none()` has that depth too.
 #[pyclass(frozen, eq, hash, name = "Limits", module = "oxiform")]

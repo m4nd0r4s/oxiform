@@ -16,7 +16,7 @@ class Limits:
     """
 
     MAX_DEPTH: ClassVar[int]
-    """The most nesting levels any decode reads (512)."""
+    """The most nesting levels any decode reads (128, which is also the default)."""
 
     def __new__(
         cls,

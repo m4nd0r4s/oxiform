@@ -129,7 +129,11 @@ fn deep_nesting_is_a_limit_error_even_with_no_limits() {
             let issue = report.issues.last().unwrap();
             assert_eq!(report.kind, ReportKind::Decode, "{depth}");
             assert_eq!(issue.code, ErrorCode::LimitExceeded, "{depth}");
-            assert!(issue.message.contains("512"), "{}", issue.message);
+            assert!(
+                issue.message.contains(&Limits::DEPTH_CEILING.to_string()),
+                "{}",
+                issue.message
+            );
         }
     }
     let ceiling = Limits::DEPTH_CEILING;

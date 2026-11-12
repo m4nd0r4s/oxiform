@@ -33,10 +33,13 @@ impl Limits {
     };
 
     /// The most nesting levels any run reads, whatever `max_depth` says. The executor reads one
-    /// level per call, about 600 bytes of stack each, so this keeps a run inside the 512 KiB
-    /// stack that threads have on macOS, with room to spare. Deeper input is a
-    /// `limit_exceeded` error, never a crash.
-    pub const DEPTH_CEILING: usize = 512;
+    /// level per call and its stack use depends on the type: about 550 bytes per level for
+    /// untyped data, 1.3 to 1.4 KB for a recursive model (through `Optional`, a union, a `list`
+    /// or a `dict`) and 2 KB through an `ox.Untagged` union. A thread has as little as 512 KiB
+    /// of stack on macOS, where the worst of these crashes at 256 levels, so the ceiling is half
+    /// of that: every shape measured uses at most half the stack at 128 levels. Deeper input is
+    /// a `limit_exceeded` error, never a crash.
+    pub const DEPTH_CEILING: usize = 128;
 
     /// No size limits, for trusted input, except that nesting stops at [`Limits::DEPTH_CEILING`]
     /// and integers keep the digit limit of the sink (CPython has its own).
