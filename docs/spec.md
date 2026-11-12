@@ -207,6 +207,7 @@ class Product:
 - **Compatibility:** a constraint on a type where it makes no sense (`Strip` on an `int`, `Ge` on a `list`) is a declaration error.
 - **`Pattern`** uses the `regex` crate, without backtracking. Lookaround and backreferences are a declaration error. It searches anywhere in the text (like `re.search` and the JSON Schema `pattern`); to match the whole text, anchor with `^…$`.
 - **`Unique`** requires hashable elements, checked at declaration.
+- **Constraints are values.** Two constraints are equal when they are the same constraint with the same values *and the same value types*: `Ge(1)`, `Ge(1.0)` and `Ge(True)` are three different constraints, and `Ge(0.0)` differs from `Ge(-0.0)`. Plans are cached by type, and `typing` caches `Annotated[...]` aliases by the equality of their metadata, so a constraint that compared equal across types (`1 == True`) would hand back the alias, and the plan, of another declaration, hiding a declaration error such as `Ge(True)`. The same holds for oxiform's own cache keys, such as the values of a `Literal`.
 - **`Past` and `Future`** compare against the clock read at the start of the decode.
 
 ### 4.2 Rules across fields: `@ox.verify`

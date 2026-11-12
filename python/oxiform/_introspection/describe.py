@@ -122,8 +122,9 @@ class _DescriptionBuilder:
             (items,) = arguments
             return ("list", self.type_of(items, location, {}), constraints)
         if origin is Literal:
+            # Keyed with the types: Literal[1] and Literal[True] hold values that compare equal.
             index = self._choice_index(
-                ("literal", arguments), lambda: literal_choice(annotation, location)
+                ("literal", _with_types(arguments)), lambda: literal_choice(annotation, location)
             )
             return self._without_constraints(("choice", index), "Literal", constraints, location)
         if origin is tuple:
@@ -275,6 +276,11 @@ class _DescriptionBuilder:
             )
             members.append(("field", field.name, len(fields) - 1))
         return Layout(cls, tuple(members), hasattr(cls, "__post_init__"))
+
+
+def _with_types(values: tuple[object, ...]) -> tuple[tuple[type, object], ...]:
+    """``values`` paired with their types, for a cache key where ``1`` and ``True`` differ."""
+    return tuple((type(value), value) for value in values)
 
 
 def _is_enum(annotation: object) -> TypeGuard[type[enum.Enum]]:
