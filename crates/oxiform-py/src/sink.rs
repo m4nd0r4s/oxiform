@@ -1,5 +1,7 @@
 //! Builds Python objects from validated values.
 
+use std::cell::OnceCell;
+
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
 use oxiform_core::sink::Sink;
 use oxiform_core::temporal::Temporal;
@@ -17,6 +19,19 @@ use crate::description::{FieldDefault, FieldSetter, Layout, MemberSource};
 pub(crate) struct PythonSink<'run, 'py> {
     pub(crate) py: Python<'py>,
     pub(crate) compiled: &'run CompiledType,
+    /// The digit limit of Python, read the first time an integer is long enough to ask for it
+    /// and kept for the rest of the decode.
+    digit_limit: OnceCell<Option<usize>>,
+}
+
+impl<'run, 'py> PythonSink<'run, 'py> {
+    pub(crate) fn new(py: Python<'py>, compiled: &'run CompiledType) -> Self {
+        Self {
+            py,
+            compiled,
+            digit_limit: OnceCell::new(),
+        }
+    }
 }
 
 impl<'py> Sink for PythonSink<'_, 'py> {
@@ -43,13 +58,16 @@ impl<'py> Sink for PythonSink<'_, 'py> {
     /// CPython refuses to build an `int` from more digits than `sys.get_int_max_str_digits()`,
     /// 0 meaning no limit. That is a `ValueError` from `int()`, so it is caught before.
     fn integer_digit_limit(&self) -> Option<(usize, &'static str)> {
-        let limit: usize = self
-            .py
-            .import("sys")
-            .and_then(|sys| sys.call_method0("get_int_max_str_digits"))
-            .and_then(|limit| limit.extract())
-            .ok()?;
-        (limit > 0).then_some((
+        let limit = (*self.digit_limit.get_or_init(|| {
+            let limit: usize = self
+                .py
+                .import("sys")
+                .and_then(|sys| sys.call_method0("get_int_max_str_digits"))
+                .and_then(|limit| limit.extract())
+                .ok()?;
+            (limit > 0).then_some(limit)
+        }))?;
+        Some((
             limit,
             "Python's own limit, raise it with sys.set_int_max_str_digits",
         ))
