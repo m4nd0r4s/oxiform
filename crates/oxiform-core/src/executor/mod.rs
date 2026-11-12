@@ -190,10 +190,35 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
 
     /// Records that `event` is not the expected type and skips the rest of its value.
     pub(crate) fn mismatch(&mut self, expected: &str, event: Event<'input>) -> Step<S> {
+        self.mismatch_with_hint(expected, None, event)
+    }
+
+    /// Like `mismatch`, for a scalar that lax mode reads from text: when `event` is text or a
+    /// number, the message says what text the type takes.
+    pub(crate) fn lax_mismatch(
+        &mut self,
+        expected: &str,
+        hint: &str,
+        event: Event<'input>,
+    ) -> Step<S> {
+        let hint = matches!(event, Event::String(_) | Event::Number(_)).then_some(hint);
+        self.mismatch_with_hint(expected, hint, event)
+    }
+
+    fn mismatch_with_hint(
+        &mut self,
+        expected: &str,
+        hint: Option<&str>,
+        event: Event<'input>,
+    ) -> Step<S> {
         let received = received_type(&event);
+        let message = match hint {
+            Some(hint) => format!("expected {expected}, received {received} ({hint})"),
+            None => format!("expected {expected}, received {received}"),
+        };
         self.report(
             ErrorCode::Type,
-            format!("expected {expected}, received {received}"),
+            message,
             input_preview(&event),
             vec![
                 ("expected", ContextValue::Text(expected.into())),
@@ -211,11 +236,22 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         limit: usize,
         what: &str,
     ) -> Stop<S::Error> {
+        let message = format!("{what} exceeds the limit {limit_name}={limit}");
+        self.limit_exceeded_with(limit_name, limit, message)
+    }
+
+    /// Like `limit_exceeded`, with the whole message.
+    pub(crate) fn limit_exceeded_with(
+        &mut self,
+        limit_name: &'static str,
+        limit: usize,
+        message: String,
+    ) -> Stop<S::Error> {
         let path = Vec::new();
         self.issues.push(Issue {
             code: ErrorCode::LimitExceeded,
             path,
-            message: format!("{what} exceeds the limit {limit_name}={limit}"),
+            message,
             input: None,
             context: vec![
                 ("limit", ContextValue::Text(limit_name.into())),
@@ -318,5 +354,19 @@ pub(crate) fn input_preview(event: &Event<'_>) -> Option<String> {
         Event::Null => "null",
         _ => return None,
     };
-    Some(text.chars().take(INPUT_PREVIEW_CHARACTERS).collect())
+    Some(preview_text(text))
 }
+
+/// `text` truncated for an issue.
+pub(crate) fn preview_text(text: &str) -> String {
+    text.chars().take(INPUT_PREVIEW_CHARACTERS).collect()
+}
+
+/// What lax mode reads as an integer, for the message of a mismatch.
+pub(crate) const LAX_INTEGER_HINT: &str =
+    "lax mode reads whole numbers, as 42, \"42\", \"-7\" or \"42.0\", not 4.5 or 1e3";
+/// What lax mode reads as a float.
+pub(crate) const LAX_FLOAT_HINT: &str =
+    "lax mode reads numbers as text, such as \"1.5\", \"-2\" or \"1e3\", not \"inf\" or \"nan\"";
+/// What lax mode reads as a bool.
+pub(crate) const LAX_BOOL_HINT: &str = "lax mode reads the text \"true\", \"false\", \"yes\", \"no\", \"on\", \"off\", \"1\" or \"0\", in any case";

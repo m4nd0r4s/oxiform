@@ -317,9 +317,12 @@ For each model:
 | `4.5` or `"4.5"` → `int` | error | error (loss of information) |
 | `true` → `int`, `1` → `bool` | error | error (`bool` is never a number, nor a number a `bool`) |
 | `"true"`, `"yes"`, `"on"`, `"1"` → `bool` | error | `True` (and `"false"`, `"no"`, `"off"`, `"0"` → `False`; any case) |
-| `""` → `int \| None` | error | `None` (only when the type does not accept `str`) |
+| `""` → `int \| None`, `date \| None`, `Literal["a"] \| None` | error | `None` (only when the type has no empty form: not `str`, `bytes` or a `Literal` with `""`) |
 | `"7"` → `int \| float` | error | `7` (no `str` variant: the first of `int`, `float`, `bool` that the text is valid for) |
-| `"2"` → `Literal[1, 2]`, `IntEnum` | error | the member whose value is `2` (an exact match always wins) |
+| `"4"` → `int \| Literal["auto"]`, `"auto"` → the same | error, `"auto"` | `4`, `"auto"` (an exact member first, then the number the text spells) |
+| `"4"` → `int \| date`, `"2026-01-31"` → the same | error, the date | `4`, the date (text with the form of a date is a date, other text is read as a number) |
+| `"2"` → `Literal[1, 2]`, `IntEnum`, `Flag` | error | the member whose value is `2` (an exact match always wins: `"1"` in `Literal[1, "1"]` is `"1"`) |
+| `"true"`, `"off"` → `Literal[True]`, `Literal[False]` | error | `True`, `False` (the integer first, then the bool: `"1"` in `Literal[1, True]` is `1`) |
 | `"1.5"` or `1.5` → `Decimal` | accepted (D11) | accepted |
 | `"2026-10-28T10:00:00Z"` → `datetime` | accepted (ISO string is the native form in JSON and YAML) | accepted |
 | `[1, 2]` → `tuple[int, int]` | `(1, 2)` | `(1, 2)` |
@@ -327,7 +330,10 @@ For each model:
 How lax mode reads text:
 
 - **It reads what the field asks for.** The type decides, never the text: `"42"` stays a `str` in a `str` field, and in `int | str`.
-- **Integers** are an optional sign and ASCII digits, with leading zeros allowed (`"007"`), and optionally a fraction of zeros. No whitespace, no digit separators, no exponent. Size limits and constraints apply to the value after coercion; an error keeps the text that was received.
+- **Integers** are an optional sign and ASCII digits, with leading zeros allowed (`"007"`), and optionally a fraction of zeros. No whitespace, no digit separators, no exponent. Constraints apply to the value after coercion, and an error shows the text that was received (`input="42.0"`, not `"42"`, for `"42.0"` in an `int` that must be at least 100; cut at 80 characters). Leading zeros are not digits for `max_int_digits` (`"000042"` has two) nor for the digit limit of Python (section 7); `max_str_len` counts the text as it was received.
+- **Unions** (`"4"` in `int | Literal["auto"]`, the `WORKERS=4` of a config). A `str` variant reads every string, so the number is never tried: `int | str` keeps `"4"` as text. A variant that reads text only in one form (a `Literal` or an `Enum` with strings, a date or a time, base64, a `UUID`) gets the text first, and when the text does not have that form the union reads it as the first of `int`, `float` and `bool` that it spells, or as `None` when empty. When none of them fits, the error is the one of the text variant (`literal`, `format`…), so the message says what the field takes. This is the same in `Optional[int | Literal["auto"]]` as in `int | Literal["auto"] | None`.
+- **An empty string** is `None` where the field is `T | None` and `T` has no way to read `""`: numbers, `bool`, dates and times, `Decimal`, a `Literal` or an `Enum` without `""`. That is how a form or an environment variable says "not set". `str`, `bytes` and a `Literal` that has `""` keep it as a value.
+- **Messages** say what text a type takes: `expected int, received str (lax mode reads whole numbers, as 42, "42", "-7" or "42.0", not 4.5 or 1e3)`; `bool` lists its words and `float` its forms. Values that text cannot stand for (a list, `null`) get the plain message.
 - **Floats** are an optional sign, digits with an optional fraction and an optional exponent. `"inf"` and `"nan"` are not numbers.
 - **Strings coerce, containers do not.** Lax mode changes how each scalar is read, at any depth (`list[int]` reads `["1", "2"]`); it never reads a string as a list, a dict or a model. Composite values coming from text sources are read as JSON by those sources (section 6.2).
 - Failures have the same codes as in strict mode (`type`, `enum`, `literal`, `too_large`…), so a client sees one vocabulary in both modes.

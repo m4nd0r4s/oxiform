@@ -5,7 +5,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
 use super::numbers::{is_integer_text, lax_integer_text};
-use super::{Executor, Step, Stop, input_preview};
+use super::{Executor, LAX_INTEGER_HINT, Step, Stop, input_preview};
 use crate::description::ConversionInput;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
@@ -66,6 +66,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             }
             _ => {
                 let Some(integer) = lax_integer else {
+                    if conversion.input == ConversionInput::Integer && self.mode == Mode::Lax {
+                        return self.lax_mismatch(&conversion.name, LAX_INTEGER_HINT, event);
+                    }
                     return self.mismatch(&conversion.name, event);
                 };
                 let value = self.read_integer(integer)?;

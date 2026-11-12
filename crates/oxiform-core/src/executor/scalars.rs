@@ -6,7 +6,10 @@ use super::numbers::{
     Integer, compare_float, compare_integer, describe_bound, digit_count, is_integer_text,
     is_lax_float_text, lax_bool_text, lax_integer_text, parse_integer, without_leading_zeros,
 };
-use super::{Executor, Step, Stop, input_preview};
+use super::{
+    Executor, LAX_BOOL_HINT, LAX_FLOAT_HINT, LAX_INTEGER_HINT, Step, Stop, input_preview,
+    preview_text,
+};
 use crate::description::Bound;
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
@@ -17,7 +20,7 @@ use crate::sink::Sink;
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     pub(crate) fn integer(&mut self, checks: &NumberChecks, event: Event<'input>) -> Step<S> {
         match event {
-            Event::Number(text) if is_integer_text(text) => self.integer_text(checks, text),
+            Event::Number(text) if is_integer_text(text) => self.integer_text(checks, text, text),
             other => self.integer_from_other(checks, other),
         }
     }
@@ -32,16 +35,21 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 Event::String(text) => Some(text.as_ref()),
                 _ => None,
             };
-            if let Some(integer) = text.and_then(lax_integer_text) {
-                return self.integer_text(checks, integer);
+            if let Some(received) = text
+                && let Some(integer) = lax_integer_text(received)
+            {
+                return self.integer_text(checks, integer, received);
             }
+            return self.lax_mismatch("int", LAX_INTEGER_HINT, event);
         }
         self.mismatch("int", event)
     }
 
-    fn integer_text(&mut self, checks: &NumberChecks, text: &str) -> Step<S> {
+    /// An integer from `text`, its digits, with the text `received` that holds them (`"42.0"`
+    /// for `42`), which is what an issue shows.
+    fn integer_text(&mut self, checks: &NumberChecks, text: &str, received: &str) -> Step<S> {
         let value = self.read_integer(text)?;
-        let input = || Some(text.to_owned());
+        let input = || Some(preview_text(received));
         let mut valid = self.check_range(checks, |bound| compare_integer(value, bound), input)?;
         if let Some(allowed) = &checks.one_of
             && !matches!(value, Integer::Small(small) if allowed.contains(&small))
@@ -81,6 +89,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         {
             return self.float_text(checks, text);
         }
+        if self.mode == Mode::Lax {
+            return self.lax_mismatch("float", LAX_FLOAT_HINT, event);
+        }
         self.mismatch("float", event)
     }
 
@@ -91,7 +102,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let valid = self.check_range(
             checks,
             |bound| compare_float(value, bound),
-            || Some(text.to_owned()),
+            || Some(preview_text(text)),
         )?;
         if !valid {
             return Ok(None);
@@ -114,6 +125,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             && let Some(value) = lax_bool_text(text)
         {
             return self.emit(|sink| sink.bool(value));
+        }
+        if self.mode == Mode::Lax {
+            return self.lax_mismatch("bool", LAX_BOOL_HINT, event);
         }
         self.mismatch("bool", event)
     }
@@ -179,11 +193,11 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             && let Some((limit, hint)) = self.sink.integer_digit_limit()
             && digits > limit
         {
-            return Err(self.limit_exceeded(
-                "max_int_digits",
-                limit,
-                &format!("the integer (the digit limit of this runtime; {hint})"),
-            ));
+            let message = format!(
+                "the integer exceeds the limit max_int_digits={limit}, the most this runtime \
+                 reads ({hint})"
+            );
+            return Err(self.limit_exceeded_with("max_int_digits", limit, message));
         }
         Ok(parse_integer(text))
     }

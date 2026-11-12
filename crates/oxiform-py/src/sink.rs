@@ -49,7 +49,10 @@ impl<'py> Sink for PythonSink<'_, 'py> {
             .and_then(|sys| sys.call_method0("get_int_max_str_digits"))
             .and_then(|limit| limit.extract())
             .ok()?;
-        (limit > 0).then_some((limit, "raise it with sys.set_int_max_str_digits"))
+        (limit > 0).then_some((
+            limit,
+            "Python's own limit, raise it with sys.set_int_max_str_digits",
+        ))
     }
 
     fn float(&mut self, value: f64) -> PyResult<Self::Value> {

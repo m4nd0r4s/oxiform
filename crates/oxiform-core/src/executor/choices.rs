@@ -1,6 +1,6 @@
 //! `Literal` and `Enum`: a value from a fixed set.
 
-use super::numbers::{Integer, is_integer_text, lax_integer_text, parse_integer};
+use super::numbers::{Integer, is_integer_text, lax_bool_text, lax_integer_text, parse_integer};
 use super::{Executor, Step, input_preview};
 use crate::events::{Event, EventReader};
 use crate::issues::{ContextValue, ErrorCode};
@@ -45,7 +45,9 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 }
 
-/// The index of the integer that lax mode finds in a string or a number such as `1.0`.
+/// The index of the member that lax mode finds in a string or a number such as `1.0`: the
+/// integer it spells, and when no member is that integer, the bool (`"yes"`, `"off"`, `"1"`)
+/// in a string. The exact match was tried first, so `Literal["1", 1]` reads `"1"` as `"1"`.
 #[cold]
 fn lax_index(choice: &ChoicePlan, event: &Event<'_>) -> Option<u32> {
     let text = match event {
@@ -53,8 +55,13 @@ fn lax_index(choice: &ChoicePlan, event: &Event<'_>) -> Option<u32> {
         Event::Number(text) => text,
         _ => return None,
     };
-    match parse_integer(lax_integer_text(text)?) {
+    let integer = lax_integer_text(text).and_then(|text| match parse_integer(text) {
         Integer::Small(number) => choice.integers.get(&number).copied(),
         Integer::Big(_) => None,
+    });
+    match (integer, event) {
+        (Some(index), _) => Some(index),
+        (None, Event::String(_)) => choice.bools[usize::from(lax_bool_text(text)?)],
+        (None, _) => None,
     }
 }
