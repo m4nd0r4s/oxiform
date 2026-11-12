@@ -102,6 +102,27 @@ impl Issue {
     }
 }
 
+impl Issue {
+    /// This issue as found inside `source` (`"body"`, `"query"`, ...): the source becomes the
+    /// first segment of the path, and so of the pointer. The issues of union variants carried in
+    /// the context move with it.
+    pub fn in_source(mut self, source: &str) -> Self {
+        self.path.insert(0, PathSegment::Key(source.to_owned()));
+        for (_, value) in &mut self.context {
+            if let ContextValue::Variants(variants) = value {
+                for (_, issues) in variants {
+                    let moved = std::mem::take(issues);
+                    *issues = moved
+                        .into_iter()
+                        .map(|issue| issue.in_source(source))
+                        .collect();
+                }
+            }
+        }
+        self
+    }
+}
+
 /// Whether the input was read to the end, or reading stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportKind {
@@ -118,4 +139,56 @@ pub struct Report {
     pub issues: Vec<Issue>,
     /// Whether collection stopped at the maximum number of errors.
     pub truncated: bool,
+}
+
+impl Report {
+    /// This report for input that came from `source`: every path starts with it.
+    pub fn in_source(mut self, source: &str) -> Self {
+        self.issues = self
+            .issues
+            .into_iter()
+            .map(|issue| issue.in_source(source))
+            .collect();
+        self
+    }
+
+    /// One report for the input of several sources, such as the body, the query string and the
+    /// path of a request: each part is `(source, report)`.
+    ///
+    /// Issues keep the order of the parts and their own order inside a part, and every code,
+    /// message and context is kept. At most `max_errors` issues are kept, the first ones, and
+    /// the result is `truncated` when an issue was dropped or any part was already truncated.
+    /// It is a decode report only when every part is one: a body that could not be read next to
+    /// a query string that was read and rejected is still a validation report, whose issues
+    /// carry the `syntax` and `limit_exceeded` codes of the part that could not be read.
+    pub fn combine<'a>(
+        parts: impl IntoIterator<Item = (&'a str, Report)>,
+        max_errors: usize,
+    ) -> Report {
+        let mut issues = Vec::new();
+        let mut truncated = false;
+        let mut every_part_is_a_decode_report = true;
+        let mut any_part = false;
+        for (source, report) in parts {
+            any_part = true;
+            every_part_is_a_decode_report &= report.kind == ReportKind::Decode;
+            truncated |= report.truncated;
+            for issue in report.issues {
+                if issues.len() < max_errors {
+                    issues.push(issue.in_source(source));
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+        Report {
+            kind: if any_part && every_part_is_a_decode_report {
+                ReportKind::Decode
+            } else {
+                ReportKind::Validation
+            },
+            issues,
+            truncated,
+        }
+    }
 }
