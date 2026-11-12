@@ -174,6 +174,28 @@ fn enforces_the_depth_limit() {
 }
 
 #[test]
+fn never_reads_deeper_than_the_ceiling() {
+    use oxiform_core::limits::Limits;
+
+    let ceiling = Limits::DEPTH_CEILING;
+    let deep = "[".repeat(100_000);
+    let mut reader = JsonReader::new(&deep, usize::MAX);
+    let rejected = loop {
+        match reader.next_event() {
+            Ok(_) => {}
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(
+        rejected.kind,
+        ReaderErrorKind::DepthLimit { limit: ceiling }
+    );
+    let exactly = format!("{}{}", "[".repeat(ceiling), "]".repeat(ceiling));
+    let mut reader = JsonReader::new(&exactly, usize::MAX);
+    while reader.next_event().unwrap() != Event::End {}
+}
+
+#[test]
 fn finds_specials_at_every_position_of_a_word() {
     for length in 0..24 {
         let plain = "é".repeat(length / 2) + &"a".repeat(length % 2);

@@ -2,10 +2,14 @@
 
 use oxiform_core::limits::Limits;
 use oxiform_core::options::{Mode, Options};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 
 /// `ox.Limits`: what protects a decode against hostile input (section 7 of the spec).
+///
+/// Every size is a whole number of at least 0. `max_depth` is at most `Limits.MAX_DEPTH` (512):
+/// the reader keeps that ceiling whatever it is given, so that deeply nested input is an error
+/// and never a crash, and `Limits.none()` has that depth too.
 #[pyclass(frozen, eq, hash, name = "Limits", module = "oxiform")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PyLimits {
@@ -33,22 +37,30 @@ impl PyLimits {
         max_int_digits = Limits::DEFAULT.max_int_digits,
     ))]
     fn new(
-        max_bytes: usize,
-        max_depth: usize,
-        max_items: usize,
-        max_str_len: usize,
-        max_int_digits: usize,
+        #[pyo3(from_py_with = max_bytes_argument)] max_bytes: usize,
+        #[pyo3(from_py_with = max_depth_argument)] max_depth: usize,
+        #[pyo3(from_py_with = max_items_argument)] max_items: usize,
+        #[pyo3(from_py_with = max_str_len_argument)] max_str_len: usize,
+        #[pyo3(from_py_with = max_int_digits_argument)] max_int_digits: usize,
     ) -> Self {
         Self {
             max_bytes,
-            max_depth,
+            max_depth: max_depth.min(Limits::DEPTH_CEILING),
             max_items,
             max_str_len,
             max_int_digits,
         }
     }
 
-    /// No limits, for trusted input.
+    /// The most nesting levels any decode reads.
+    #[classattr]
+    #[pyo3(name = "MAX_DEPTH")]
+    fn max_depth_ceiling() -> usize {
+        Limits::DEPTH_CEILING
+    }
+
+    /// No limits, for trusted input. Nesting still stops at `Limits.MAX_DEPTH` levels and
+    /// integers at the digit limit of Python (`sys.get_int_max_str_digits()`).
     #[staticmethod]
     fn none() -> Self {
         Self::from(Limits::none())
@@ -73,6 +85,36 @@ impl From<Limits> for PyLimits {
         }
     }
 }
+
+/// A size argument of `Limits`: a whole number from 0 to the largest `usize`. Anything else
+/// that is a number says so and points at `Limits.none()`, instead of a bare `OverflowError`.
+fn size_argument(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    value.extract::<usize>().map_err(|error| {
+        if error.is_instance_of::<PyOverflowError>(value.py()) {
+            PyValueError::new_err(format!(
+                "{name} must be a whole number from 0 to {}, not {value}; \
+                 use ox.Limits.none() to turn the limits off",
+                usize::MAX
+            ))
+        } else {
+            error
+        }
+    })
+}
+
+macro_rules! size_argument {
+    ($function:ident, $name:literal) => {
+        fn $function(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+            size_argument($name, value)
+        }
+    };
+}
+
+size_argument!(max_bytes_argument, "max_bytes");
+size_argument!(max_depth_argument, "max_depth");
+size_argument!(max_items_argument, "max_items");
+size_argument!(max_str_len_argument, "max_str_len");
+size_argument!(max_int_digits_argument, "max_int_digits");
 
 /// The options of one decode call, from the arguments Python passed.
 pub(crate) fn decode_options(

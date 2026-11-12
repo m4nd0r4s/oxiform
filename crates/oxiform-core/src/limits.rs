@@ -5,7 +5,7 @@
 pub struct Limits {
     /// Bytes per document.
     pub max_bytes: usize,
-    /// Nesting levels.
+    /// Nesting levels, at most [`Limits::DEPTH_CEILING`].
     pub max_depth: usize,
     /// Items per collection, or keys per map.
     pub max_items: usize,
@@ -34,11 +34,19 @@ impl Limits {
         max_errors: 100,
     };
 
-    /// No size limits, for trusted input. The number of errors collected stays bounded.
+    /// The most nesting levels any run reads, whatever `max_depth` says. The executor reads one
+    /// level per call, about 600 bytes of stack each, so this keeps a run inside the 512 KiB
+    /// stack that threads have on macOS, with room to spare. Deeper input is a
+    /// `limit_exceeded` error, never a crash.
+    pub const DEPTH_CEILING: usize = 512;
+
+    /// No size limits, for trusted input, except that nesting stops at [`Limits::DEPTH_CEILING`]
+    /// and integers keep the digit limit of the sink (CPython has its own). The number of
+    /// errors collected stays bounded.
     pub fn none() -> Self {
         Self {
             max_bytes: usize::MAX,
-            max_depth: usize::MAX,
+            max_depth: Self::DEPTH_CEILING,
             max_items: usize::MAX,
             max_str_len: usize::MAX,
             max_int_digits: usize::MAX,

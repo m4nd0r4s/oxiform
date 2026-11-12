@@ -84,6 +84,25 @@ fn enforces_size_limits() {
 }
 
 #[test]
+fn deep_nesting_is_a_limit_error_even_with_no_limits() {
+    for opening in ["[", r#"{"a":"#] {
+        let closing = if opening == "[" { "]" } else { "}" };
+        for depth in [Limits::DEPTH_CEILING + 1, 100_000] {
+            let input = format!("{}1{}", opening.repeat(depth), closing.repeat(depth));
+            let report =
+                decode_with(&plain(TypeDescription::Any), &input, &Limits::none()).unwrap_err();
+            let issue = report.issues.last().unwrap();
+            assert_eq!(report.kind, ReportKind::Decode, "{depth}");
+            assert_eq!(issue.code, ErrorCode::LimitExceeded, "{depth}");
+            assert!(issue.message.contains("512"), "{}", issue.message);
+        }
+    }
+    let ceiling = Limits::DEPTH_CEILING;
+    let exactly = format!("{}1{}", "[".repeat(ceiling), "]".repeat(ceiling));
+    assert!(decode_with(&plain(TypeDescription::Any), &exactly, &Limits::none()).is_ok());
+}
+
+#[test]
 fn places_syntax_errors_at_the_key_being_read() {
     let report = decode(&plain(TypeDescription::Any), "{\"a\": {\"b\": }}").unwrap_err();
     assert_eq!(report.issues[0].pointer(), "/a/b");

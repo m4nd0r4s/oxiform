@@ -1,6 +1,7 @@
 //! A validating pull reader that turns JSON text into events.
 
 use oxiform_core::events::{Event, EventReader, ReaderError, ReaderErrorDetails, ReaderErrorKind};
+use oxiform_core::limits::Limits;
 use smallvec::SmallVec;
 
 use super::location::line_and_column;
@@ -45,7 +46,8 @@ pub struct JsonReader<'input> {
 }
 
 impl<'input> JsonReader<'input> {
-    /// A reader that refuses containers nested deeper than `max_depth`.
+    /// A reader that refuses containers nested deeper than `max_depth`, or than
+    /// [`Limits::DEPTH_CEILING`] when that is less.
     pub fn new(input: &'input str, max_depth: usize) -> Self {
         Self {
             input,
@@ -54,7 +56,7 @@ impl<'input> JsonReader<'input> {
             containers: SmallVec::new(),
             current: None,
             state: State::Value,
-            max_depth,
+            max_depth: max_depth.min(Limits::DEPTH_CEILING),
         }
     }
 

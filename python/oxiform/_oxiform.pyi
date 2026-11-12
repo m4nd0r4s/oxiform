@@ -1,4 +1,4 @@
-from typing import Any, Generic, Literal, TypeVar, overload
+from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
 _T = TypeVar("_T")
 
@@ -8,7 +8,15 @@ __version__: str
 
 class Limits:
     """What protects a decode against hostile input. Exceeding one is a ``DecodeError`` with the
-    code ``limit_exceeded``."""
+    code ``limit_exceeded``.
+
+    Every size is a whole number of at least 0. ``max_depth`` is capped at ``MAX_DEPTH``: a
+    larger value is read as ``MAX_DEPTH``, so nesting that deep is an error and never a crash,
+    also with ``Limits.none()``.
+    """
+
+    MAX_DEPTH: ClassVar[int]
+    """The most nesting levels any decode reads (512)."""
 
     def __new__(
         cls,
@@ -21,7 +29,8 @@ class Limits:
     ) -> Limits: ...
     @staticmethod
     def none() -> Limits:
-        """No limits, for trusted input."""
+        """No limits, for trusted input. Nesting stops at ``MAX_DEPTH`` levels, and integers at
+        the digit limit of Python (``sys.get_int_max_str_digits()``)."""
     @property
     def max_bytes(self) -> int: ...
     @property
