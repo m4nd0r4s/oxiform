@@ -113,7 +113,7 @@ fn checks_the_size_of_every_string_that_is_read() {
         let report = decode_options(&plain(description), input, &options).unwrap_err();
         let issue = report.issues.last().unwrap();
         assert_eq!(issue.code, ErrorCode::LimitExceeded, "{input}");
-        assert!(issue.message.contains("max_str_len=3"), "{input}");
+        assert!(issue.message.contains("limit of 3 bytes"), "{input}");
     }
     assert!(decode_options(&plain(integer()), r#""042""#, &options).is_ok());
 }

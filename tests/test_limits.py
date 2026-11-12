@@ -256,7 +256,7 @@ def test_max_str_len_applies_to_every_string_that_is_read(kind: Any, raw: bytes,
         ox.json.decode(raw, kind, mode=mode, limits=limits)  # type: ignore[arg-type]
     error = caught.value.errors()[0]
     assert error["code"] == "limit_exceeded"
-    assert error["ctx"] == {"limit": "max_str_len", "value": 3}
+    assert (error["ctx"]["limit"], error["ctx"]["value"]) == ("max_str_len", 3)
 
 
 def test_max_str_len_allows_a_string_of_exactly_that_length() -> None:

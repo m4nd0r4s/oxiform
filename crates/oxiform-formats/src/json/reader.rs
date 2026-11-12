@@ -43,6 +43,7 @@ pub struct JsonReader<'input> {
     current: Option<Container>,
     state: State,
     max_depth: usize,
+    max_str_len: usize,
 }
 
 impl<'input> JsonReader<'input> {
@@ -57,7 +58,15 @@ impl<'input> JsonReader<'input> {
             current: None,
             state: State::Value,
             max_depth: max_depth.min(Limits::DEPTH_CEILING),
+            max_str_len: usize::MAX,
         }
+    }
+
+    /// Refuses strings and keys longer than `max_str_len` bytes (after unescaping).
+    #[must_use]
+    pub fn with_max_str_len(mut self, max_str_len: usize) -> Self {
+        self.max_str_len = max_str_len;
+        self
     }
 
     #[inline(always)]
@@ -93,6 +102,16 @@ impl<'input> JsonReader<'input> {
             line,
             column,
         })
+    }
+
+    #[cold]
+    fn string_too_long(&self) -> ReaderError {
+        let limit = self.max_str_len;
+        self.error(
+            self.position,
+            ReaderErrorKind::StringLimit { limit },
+            format!("string longer than the limit of {limit} bytes"),
+        )
     }
 
     fn syntax_error(&self, offset: usize, message: impl Into<String>) -> ReaderError {
@@ -160,6 +179,9 @@ impl<'input> JsonReader<'input> {
             Some(b'"') => {
                 let (text, end) = read_string(self.input, self.position)
                     .map_err(|(offset, message)| self.syntax_error(offset, message))?;
+                if text.len() > self.max_str_len {
+                    return Err(self.string_too_long());
+                }
                 self.position = end;
                 Event::String(text)
             }
@@ -197,6 +219,9 @@ impl<'input> JsonReader<'input> {
         self.event_offset = self.position;
         let (key, end) = read_string(self.input, self.position)
             .map_err(|(offset, message)| self.syntax_error(offset, message))?;
+        if key.len() > self.max_str_len {
+            return Err(self.string_too_long());
+        }
         self.position = end;
         self.skip_whitespace();
         if self.peek() != Some(b':') {

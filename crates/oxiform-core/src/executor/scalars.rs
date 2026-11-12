@@ -176,10 +176,22 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 
     /// Reads integer text, enforcing the digit limit.
+    #[inline]
     pub(crate) fn read_integer<'text>(
         &mut self,
         text: &'text str,
     ) -> Result<Integer<'text>, Stop<S::Error>> {
+        // The text is at least as long as its digits, and an integer of at most 18 digits fits
+        // 64 bits and never reaches the sink's own limit: only longer text is counted.
+        if text.len() > self.limits.max_int_digits.min(18) {
+            self.check_digits(text)?;
+        }
+        Ok(parse_integer(text))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn check_digits(&mut self, text: &str) -> Result<(), Stop<S::Error>> {
         let digits = digit_count(text);
         if digits > self.limits.max_int_digits {
             return Err(self.limit_exceeded(
@@ -188,7 +200,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 "the integer",
             ));
         }
-        // An integer of at most 18 digits fits 64 bits and never reaches the sink's own limit.
         if digits > 18
             && let Some((limit, hint)) = self.sink.integer_digit_limit()
             && digits > limit
@@ -199,7 +210,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             );
             return Err(self.limit_exceeded_with("max_int_digits", limit, message));
         }
-        Ok(parse_integer(text))
+        Ok(())
     }
 
     /// Reads number text as a float; out-of-range numbers are a type issue.

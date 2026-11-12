@@ -144,21 +144,11 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
     }
 
-    /// The next event. Every string and key is checked against `max_str_len` here, as it is
-    /// read, whatever becomes of it afterwards: a value, a coerced number, a date, a member of a
-    /// `Literal`, or a field that is skipped.
     #[inline]
     pub(crate) fn next_event(&mut self) -> Result<Event<'input>, Stop<S::Error>> {
-        let event = self
-            .reader
+        self.reader
             .next_event()
-            .map_err(|error| self.unreadable(error))?;
-        if let Event::String(text) | Event::Key(text) = &event
-            && text.len() > self.limits.max_str_len
-        {
-            return Err(self.limit_exceeded("max_str_len", self.limits.max_str_len, "the string"));
-        }
-        Ok(event)
+            .map_err(|error| self.unreadable(error))
     }
 
     #[inline]
@@ -281,12 +271,10 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let code = match error.kind.clone() {
             ReaderErrorKind::Syntax => ErrorCode::Syntax,
             ReaderErrorKind::DepthLimit { limit } => {
-                context.push(("limit", ContextValue::Text("max_depth".into())));
-                context.push((
-                    "value",
-                    ContextValue::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
-                ));
-                ErrorCode::LimitExceeded
+                limit_context(&mut context, "max_depth", limit)
+            }
+            ReaderErrorKind::StringLimit { limit } => {
+                limit_context(&mut context, "max_str_len", limit)
             }
         };
         let message = format!(
@@ -331,6 +319,20 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
         Ok(())
     }
+}
+
+/// Names the limit a reader enforced, in the context of its issue.
+fn limit_context(
+    context: &mut Vec<(&'static str, ContextValue)>,
+    name: &'static str,
+    limit: usize,
+) -> ErrorCode {
+    context.push(("limit", ContextValue::Text(name.into())));
+    context.push((
+        "value",
+        ContextValue::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+    ));
+    ErrorCode::LimitExceeded
 }
 
 /// The Python name of what `event` starts.

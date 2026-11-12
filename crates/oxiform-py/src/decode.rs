@@ -115,7 +115,7 @@ fn decode_with<'py>(
             ));
         }
     };
-    let mut reader = JsonReader::new(text, limits.max_depth);
+    let mut reader = JsonReader::new(text, limits.max_depth).with_max_str_len(limits.max_str_len);
     let mut sink = PythonSink { py, compiled };
     match execute(&compiled.plan, &mut reader, &mut sink, options) {
         Ok(value) => Ok(value),

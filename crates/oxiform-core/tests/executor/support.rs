@@ -176,7 +176,8 @@ pub fn decode_options(
     options: &Options,
 ) -> Result<Value, Report> {
     let plan = compile(description).expect("the description compiles");
-    let mut reader = JsonReader::new(input, options.limits.max_depth);
+    let mut reader = JsonReader::new(input, options.limits.max_depth)
+        .with_max_str_len(options.limits.max_str_len);
     match execute(&plan, &mut reader, &mut ValueSink, options) {
         Ok(value) => Ok(value),
         Err(Failure::Invalid(report)) => Err(report),

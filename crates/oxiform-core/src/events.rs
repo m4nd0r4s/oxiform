@@ -30,6 +30,8 @@ pub enum ReaderErrorKind {
     Syntax,
     /// Containers are nested deeper than the configured limit.
     DepthLimit { limit: usize },
+    /// A string or a key is longer than the configured limit, in bytes.
+    StringLimit { limit: usize },
 }
 
 /// A reader failure with its place in the input. Boxed, so the `Result` of every event stays
@@ -77,6 +79,10 @@ impl fmt::Display for ReaderError {
 impl std::error::Error for ReaderError {}
 
 /// A pull reader over one document.
+///
+/// A reader enforces `max_depth` (with `Limits::DEPTH_CEILING`) and `max_str_len` itself, as it
+/// reads, so that the executor does not look at every string again: it reports
+/// `ReaderErrorKind::DepthLimit` and `ReaderErrorKind::StringLimit`.
 pub trait EventReader<'input> {
     /// The next event, or the reason the input cannot be read further.
     fn next_event(&mut self) -> Result<Event<'input>, ReaderError>;
