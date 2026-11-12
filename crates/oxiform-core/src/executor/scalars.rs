@@ -122,7 +122,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let Event::String(text) = &event else {
             return self.mismatch("str", event);
         };
-        self.check_string_size(text)?;
         let mut valid = true;
         if !checks.length.is_unbounded() {
             valid &= self.check_length(checks.length, text.chars().count(), || {
@@ -214,14 +213,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 self.emit(|sink| sink.big_integer(&digits))
             }
         }
-    }
-
-    #[inline]
-    pub(crate) fn check_string_size(&mut self, text: &str) -> Result<(), Stop<S::Error>> {
-        if text.len() > self.limits.max_str_len {
-            return Err(self.limit_exceeded("max_str_len", self.limits.max_str_len, "the string"));
-        }
-        Ok(())
     }
 
     /// Checks `Ge` and `Le`. Returns whether the value passed.

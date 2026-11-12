@@ -23,10 +23,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 Some(value) => self.emit(|sink| sink.float(value)),
                 None => Ok(None),
             },
-            Event::String(text) => {
-                self.check_string_size(&text)?;
-                self.emit(|sink| sink.string(&text))
-            }
+            Event::String(text) => self.emit(|sink| sink.string(&text)),
             Event::SequenceStart => {
                 self.list(SequenceKind::List, None, LengthRange::default(), event)
             }
@@ -146,7 +143,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the dict"));
             }
             count += 1;
-            self.check_string_size(&key)?;
             let mark = self.issues.len();
             let entry = self.entry(values, &key, &mut map, valid);
             self.prefix_issues(mark, || PathSegment::Key(key.into_owned()));

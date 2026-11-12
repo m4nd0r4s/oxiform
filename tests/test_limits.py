@@ -1,8 +1,12 @@
+import datetime
 import enum
 import sys
 import threading
 from collections.abc import Iterator
-from typing import Any
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any, Literal
+from uuid import UUID
 
 import pytest
 
@@ -213,3 +217,54 @@ def test_leading_zeros_are_not_digits(default_int_digits: int) -> None:
     padded = "0" * 10_000 + "7" * 30
     assert ox.json.decode(f'"{padded}"'.encode(), int, mode="lax") == int("7" * 30)
     assert ox.json.decode(f'"-{padded}"'.encode(), int, mode="lax") == -int("7" * 30)
+
+
+@dataclass(slots=True)
+class Small:
+    n: int = 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "raw", "mode"),
+    [
+        (str, b'"abcd"', "strict"),
+        (int, b'"0000042"', "lax"),
+        (int, b'"42.0000"', "lax"),
+        (float, b'"1.2345"', "lax"),
+        (bool, b'"false"', "lax"),
+        (int | float | None, b'"1.2345"', "lax"),
+        (Perm, b'"0001"', "lax"),
+        (Literal["a", "b"], b'"abcd"', "strict"),
+        (Literal[1, 2], b'"0001"', "lax"),
+        (datetime.datetime, b'"2026-01-01T00:00:00Z"', "strict"),
+        (datetime.date, b'"2026-01-01"', "strict"),
+        (datetime.timedelta, b'"P1DT1H"', "strict"),
+        (UUID, b'"a8098c1a-f86e-11da-bd1a-00112444be1e"', "strict"),
+        (Decimal, b'"1.2345"', "strict"),
+        (bytes, b'"QUJDREVGRw=="', "strict"),
+        (list[str], b'["a", "abcd"]', "strict"),
+        (dict[str, int], b'{"abcd": 1}', "strict"),
+        (Small, b'{"abcd": 1}', "strict"),
+        (Small, b'{"n": 1, "ignored": "a long string"}', "strict"),
+        (Any, b'{"a": ["abcd"]}', "strict"),
+        (int | Literal["auto"], b'"abcd"', "lax"),
+    ],
+)
+def test_max_str_len_applies_to_every_string_that_is_read(kind: Any, raw: bytes, mode: str) -> None:
+    limits = ox.Limits(max_str_len=3, max_int_digits=100)
+    with pytest.raises(ox.DecodeError) as caught:
+        ox.json.decode(raw, kind, mode=mode, limits=limits)  # type: ignore[arg-type]
+    error = caught.value.errors()[0]
+    assert error["code"] == "limit_exceeded"
+    assert error["ctx"] == {"limit": "max_str_len", "value": 3}
+
+
+def test_max_str_len_allows_a_string_of_exactly_that_length() -> None:
+    limits = ox.Limits(max_str_len=3)
+    assert ox.json.decode(b'"abc"', str, limits=limits) == "abc"
+    assert ox.json.decode(b'"042"', int, mode="lax", limits=limits) == 42
+    assert ox.json.decode(b'"1.5"', float, mode="lax", limits=limits) == 1.5
+    assert ox.json.decode(b'{"abc": 1}', dict[str, int], limits=limits) == {"abc": 1}
+    # The limit counts bytes of UTF-8, as the spec says.
+    with pytest.raises(ox.DecodeError):
+        ox.json.decode('"éé"'.encode(), str, limits=limits)

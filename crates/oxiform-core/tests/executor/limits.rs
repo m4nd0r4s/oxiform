@@ -1,8 +1,9 @@
-use oxiform_core::description::{Constraints, TypeDescription};
+use oxiform_core::description::{Constraints, TemporalKind, TypeDescription};
 use oxiform_core::issues::{ErrorCode, ReportKind};
 use oxiform_core::limits::Limits;
+use oxiform_core::options::{Mode, Options};
 
-use crate::support::{decode, decode_with, integer, plain, string};
+use crate::support::{decode, decode_options, decode_with, integer, plain, string};
 
 fn list_of_integers() -> TypeDescription {
     TypeDescription::List {
@@ -81,6 +82,39 @@ fn enforces_size_limits() {
             "{input}"
         );
     }
+}
+
+#[test]
+fn checks_the_size_of_every_string_that_is_read() {
+    let limits = Limits {
+        max_str_len: 3,
+        max_int_digits: 100,
+        ..Limits::default()
+    };
+    let options = Options {
+        mode: Mode::Lax,
+        limits,
+    };
+    let cases = [
+        (integer(), r#""0000042""#),
+        (
+            TypeDescription::Float(Constraints::default()),
+            r#""1.2345""#,
+        ),
+        (TypeDescription::Bool, r#""false""#),
+        (
+            TypeDescription::Temporal(TemporalKind::Date),
+            r#""2026-01-01""#,
+        ),
+        (TypeDescription::Any, r#"{"abcd": 1}"#),
+    ];
+    for (description, input) in cases {
+        let report = decode_options(&plain(description), input, &options).unwrap_err();
+        let issue = report.issues.last().unwrap();
+        assert_eq!(issue.code, ErrorCode::LimitExceeded, "{input}");
+        assert!(issue.message.contains("max_str_len=3"), "{input}");
+    }
+    assert!(decode_options(&plain(integer()), r#""042""#, &options).is_ok());
 }
 
 #[test]

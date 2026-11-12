@@ -24,7 +24,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             let expected = if mutable { "bytearray" } else { "bytes" };
             return self.mismatch(expected, event);
         };
-        self.check_string_size(text)?;
         let Ok(decoded) = STANDARD.decode(text.as_bytes()) else {
             self.report_format("base64", "invalid base64".into(), &event)?;
             return Ok(None);
@@ -48,7 +47,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         };
         let raw = match (conversion.input, &event) {
             (ConversionInput::String, Event::String(text)) => {
-                self.check_string_size(text)?;
                 self.emit(|sink| sink.string(text))?
             }
             (ConversionInput::Integer, Event::Number(text)) if is_integer_text(text) => {
@@ -59,7 +57,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
                 self.emit(|sink| sink.string(text))?
             }
             (ConversionInput::Decimal, Event::String(text)) => {
-                self.check_string_size(text)?;
                 if !is_decimal_text(text) {
                     let message = format!("invalid {}", conversion.name);
                     self.report_format(&conversion.format, message, &event)?;

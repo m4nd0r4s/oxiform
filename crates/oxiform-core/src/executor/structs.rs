@@ -48,7 +48,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             if keys > self.limits.max_items {
                 return Err(self.limit_exceeded("max_items", self.limits.max_items, "the map"));
             }
-            self.check_string_size(&key)?;
             if let Some((tag_field, tag)) = &structure.tag
                 && *key == **tag_field
             {

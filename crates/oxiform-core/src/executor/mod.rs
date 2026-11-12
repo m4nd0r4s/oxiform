@@ -141,11 +141,21 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         }
     }
 
+    /// The next event. Every string and key is checked against `max_str_len` here, as it is
+    /// read, whatever becomes of it afterwards: a value, a coerced number, a date, a member of a
+    /// `Literal`, or a field that is skipped.
     #[inline]
     pub(crate) fn next_event(&mut self) -> Result<Event<'input>, Stop<S::Error>> {
-        self.reader
+        let event = self
+            .reader
             .next_event()
-            .map_err(|error| self.unreadable(error))
+            .map_err(|error| self.unreadable(error))?;
+        if let Event::String(text) | Event::Key(text) = &event
+            && text.len() > self.limits.max_str_len
+        {
+            return Err(self.limit_exceeded("max_str_len", self.limits.max_str_len, "the string"));
+        }
+        Ok(event)
     }
 
     #[inline]
