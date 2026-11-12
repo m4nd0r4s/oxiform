@@ -1,6 +1,9 @@
 """Exceptions raised by oxiform."""
 
-from typing import NotRequired, TypedDict
+from collections.abc import Iterable, Mapping
+from typing import NotRequired, Self, TypedDict, cast
+
+from oxiform._problem import status_title
 
 __all__ = [
     "DecodeError",
@@ -73,18 +76,92 @@ class ValidationError(OxiformError, ValueError):
             grouped.setdefault(error["pointer"], []).append(error)
         return grouped
 
-    def to_problem(self) -> dict[str, object]:
-        """An RFC 9457 problem details object (``application/problem+json``)."""
-        return {
-            "type": "about:blank",
-            "title": "Unprocessable Content",
-            "status": 422,
+    def with_source(self, source: str) -> Self:
+        """The same problems found in ``source`` (``"body"``, ``"query"``, ``"path"``,
+        ``"header"``, ``"cookie"``): the source becomes the first path segment and so the first
+        part of every pointer, as in ``/query/page``. Codes, messages, ``input`` and ``ctx`` are
+        kept, and so is the class: a ``DecodeError`` stays one. The error itself is not changed.
+        """
+        _check_source(source)
+        return type(self)(
+            [_in_source(error, source) for error in self._errors],
+            truncated=self.truncated,
+            target=self.target,
+            format=self.format,
+        )
+
+    @classmethod
+    def combine(
+        cls,
+        parts: Mapping[str, "ValidationError"] | Iterable[tuple[str, "ValidationError"]],
+        *,
+        max_errors: int = 100,
+        target: str = "request",
+    ) -> "ValidationError":
+        """One error for the input of several sources, such as the parts of a request.
+
+        ``parts`` maps a source name to the error its decode call raised (or is an iterable of
+        ``(source, error)`` pairs, in which a source may repeat). Problems keep the order of the
+        parts and their own order inside a part; each path starts with its source, and codes,
+        messages, ``input`` and ``ctx`` are kept. At most ``max_errors`` problems are kept, the
+        first ones, and ``truncated`` is set when one was dropped or a part was itself truncated.
+        The result is a ``DecodeError`` only when every part is one. Raise the result, or call
+        ``to_problem()`` on it for a single RFC 9457 response.
+        """
+        limit = _max_errors(max_errors)
+        pairs = _pairs(parts)
+        errors: list[ErrorDetails] = []
+        truncated = False
+        formats: list[str] = []
+        for source, part in pairs:
+            _check_source(source)
+            if not isinstance(part, ValidationError):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(
+                    f"combine() takes ValidationError objects, but the part for {source!r} is "
+                    f"{type(part).__name__}; pass the error a decode call raised"
+                )
+            truncated |= part.truncated
+            if part.format not in formats:
+                formats.append(part.format)
+            for error in part._errors:  # noqa: SLF001
+                if len(errors) < limit:
+                    errors.append(_in_source(error, source))
+                else:
+                    truncated = True
+        every_part_is_a_decode_error = bool(pairs) and all(
+            isinstance(part, DecodeError) for _, part in pairs
+        )
+        result = DecodeError if every_part_is_a_decode_error else ValidationError
+        return result(errors, truncated=truncated, target=target, format=", ".join(formats))
+
+    def to_problem(
+        self,
+        *,
+        status: int = 422,
+        type: str = "about:blank",  # noqa: A002
+        title: str | None = None,
+        instance: str | None = None,
+    ) -> dict[str, object]:
+        """An RFC 9457 problem details object (``application/problem+json``).
+
+        ``status`` is the HTTP status the response is sent with, ``type`` the URI that names the
+        kind of problem, ``instance`` a URI for this occurrence (left out when ``None``) and
+        ``title`` defaults to the standard phrase of ``status``. ``errors`` lists every problem
+        as ``{"pointer", "code", "detail"}``.
+        """
+        problem: dict[str, object] = {
+            "type": type,
+            "title": title if title is not None else status_title(status),
+            "status": status,
             "detail": self._summary(),
-            "errors": [
-                {"pointer": error["pointer"], "code": error["code"], "detail": error["message"]}
-                for error in self._errors
-            ],
         }
+        if instance is not None:
+            problem["instance"] = instance
+        problem["errors"] = [
+            {"pointer": error["pointer"], "code": error["code"], "detail": error["message"]}
+            for error in self._errors
+        ]
+        return problem
 
     def _summary(self) -> str:
         count = len(self._errors)
@@ -106,3 +183,74 @@ class ValidationError(OxiformError, ValueError):
 
 class DecodeError(ValidationError):
     """The input could not be read: it is malformed, or a limit was exceeded."""
+
+
+def _pairs(
+    parts: Mapping[str, ValidationError] | Iterable[tuple[str, ValidationError]],
+) -> list[tuple[str, ValidationError]]:
+    if isinstance(parts, Mapping):
+        return list(cast("Mapping[str, ValidationError]", parts).items())
+    return list(parts)
+
+
+def _check_source(source: object) -> None:
+    if not isinstance(source, str) or not source:
+        raise ValueError(
+            f'a source must be a non-empty string such as "body" or "query", not {source!r}'
+        )
+
+
+def _max_errors(value: object) -> int:
+    largest = 2**64 - 1
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"max_errors must be a whole number, not {type(value).__name__}")
+    if value == 0:
+        raise ValueError(
+            "max_errors must be at least 1, not 0; use max_errors=1 to stop at the first error"
+        )
+    if not 1 <= value <= largest:
+        raise ValueError(f"max_errors must be a whole number from 1 to {largest}, not {value}")
+    return value
+
+
+def _escape_pointer_segment(segment: str) -> str:
+    """One path segment as a JSON Pointer reference token (RFC 6901)."""
+    return segment.replace("~", "~0").replace("/", "~1")
+
+
+def _in_source(error: ErrorDetails, source: str) -> ErrorDetails:
+    """A copy of ``error`` with ``source`` as the first segment of its path and pointer."""
+    moved = ErrorDetails(
+        code=error["code"],
+        path=[source, *error["path"]],
+        pointer="/" + _escape_pointer_segment(source) + error["pointer"],
+        message=error["message"],
+        ctx={key: _context_in_source(value, source) for key, value in error["ctx"].items()},
+    )
+    if "input" in error:
+        moved["input"] = error["input"]
+    return moved
+
+
+def _context_in_source(value: object, source: str) -> object:
+    """The issues of the union variants kept in a context move with their parent."""
+    if not isinstance(value, dict):
+        return value
+    by_variant = cast("dict[str, object]", value)
+    if not by_variant or not all(_is_error_list(item) for item in by_variant.values()):
+        return value  # pyright: ignore[reportUnknownVariableType]
+    moved: dict[str, object] = {}
+    for name, errors in by_variant.items():
+        moved[name] = [_in_source(error, source) for error in cast("list[ErrorDetails]", errors)]
+    return moved
+
+
+def _is_error_list(value: object) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    items = cast("list[object]", value)
+    return all(
+        isinstance(item, dict)
+        and {"code", "path", "pointer"} <= cast("dict[str, object]", item).keys()
+        for item in items
+    )
