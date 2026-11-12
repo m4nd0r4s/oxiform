@@ -2,8 +2,9 @@
 
 use oxiform_core::limits::Limits;
 use oxiform_core::options::{Mode, Options};
-use pyo3::exceptions::{PyOverflowError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBool;
 
 /// `ox.Limits`: what protects a decode against hostile input (section 7 of the spec).
 ///
@@ -104,6 +105,11 @@ fn size_argument(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {
 
 /// The `max_errors` argument of a decode call: a whole number from 1 to the largest `usize`.
 pub(crate) fn max_errors_argument(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "max_errors must be a whole number, not bool; use max_errors=1 to stop at the first error",
+        ));
+    }
     let count = value.extract::<usize>().map_err(|error| {
         if error.is_instance_of::<PyOverflowError>(value.py()) {
             PyValueError::new_err(format!(

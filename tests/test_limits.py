@@ -268,3 +268,11 @@ def test_max_errors_of_zero_is_refused_and_one_stops_at_the_first_error() -> Non
 def test_max_errors_of_the_wrong_type_is_a_type_error() -> None:
     with pytest.raises(TypeError):
         ox.json.decode(b"[1]", list[int], max_errors="all")  # type: ignore[arg-type]
+
+
+def test_max_errors_refuses_a_bool_instead_of_reading_it_as_one() -> None:
+    for value in (True, False):
+        with pytest.raises(TypeError, match=r"max_errors must be a whole number, not bool"):
+            ox.json.decode(b"[1]", list[int], max_errors=value)  # pyright: ignore[reportArgumentType]
+        with pytest.raises(TypeError, match=r"max_errors must be a whole number, not bool"):
+            ox.json.Decoder(list[int], max_errors=value)  # pyright: ignore[reportArgumentType]
