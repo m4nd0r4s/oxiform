@@ -69,13 +69,48 @@ def model(
     """
 
     def convert(target: type[_T]) -> type[_T]:
-        options = _options(
-            target, rename_all, unknown, tag, tag_field, skip_if_default, skip_if_none
+        return make_model_class(
+            target,
+            frozen=frozen,
+            kw_only=kw_only,
+            order=order,
+            eq=eq,
+            hash=hash,
+            rename_all=rename_all,
+            unknown=unknown,
+            tag=tag,
+            tag_field=tag_field,
+            skip_if_default=skip_if_default,
+            skip_if_none=skip_if_none,
         )
-        made = _dataclass(target, frozen, kw_only, order, eq, hash)
-        return _finish(made, options)
 
     return convert if cls is None else convert(cls)
+
+
+def make_model_class(
+    cls: type[_T],
+    *,
+    frozen: bool,
+    kw_only: bool,
+    order: bool = False,
+    eq: bool = True,
+    hash: bool | None = None,
+    rename_all: RenameRule | None = None,
+    unknown: UnknownFields | None = None,
+    tag: str | None = None,
+    tag_field: str | None = None,
+    skip_if_default: bool | None = None,
+    skip_if_none: bool | None = None,
+    weakref_slot: bool = False,
+    before_finish: Callable[[type[_T]], None] | None = None,
+) -> type[_T]:
+    """What ``@ox.model`` does to ``cls``; ``@ox.config`` is the same with its own defaults.
+    ``before_finish`` runs on the finished dataclass before its plan is compiled."""
+    options = _options(cls, rename_all, unknown, tag, tag_field, skip_if_default, skip_if_none)
+    made = _dataclass(cls, frozen, kw_only, order, eq, hash, weakref_slot)
+    if before_finish is not None:
+        before_finish(made)
+    return _finish(made, options)
 
 
 def replace(obj: _T, /, **changes: Any) -> _T:
@@ -163,7 +198,13 @@ def _options(
 
 
 def _dataclass(
-    cls: type[_T], frozen: bool, kw_only: bool, order: bool, eq: bool, hash: bool | None
+    cls: type[_T],
+    frozen: bool,
+    kw_only: bool,
+    order: bool,
+    eq: bool,
+    hash: bool | None,
+    weakref_slot: bool = False,
 ) -> type[_T]:
     try:
         made = dataclasses.dataclass(
@@ -173,6 +214,7 @@ def _dataclass(
             eq=eq,
             unsafe_hash=hash is True,
             slots=True,
+            weakref_slot=weakref_slot,
         )(cls)
     except (TypeError, ValueError) as error:
         raise SchemaError(f"{cls.__qualname__}: {error}") from error

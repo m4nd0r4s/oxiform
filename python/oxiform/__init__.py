@@ -1,6 +1,7 @@
 """Validate and (de)serialize Python types with a Rust engine."""
 
-from oxiform import json, pairs, urlencoded
+from oxiform import cfg, json, pairs, urlencoded
+from oxiform._config import config
 from oxiform._fields import field
 from oxiform._json_schema import (
     JsonSchema,
@@ -49,6 +50,8 @@ __all__ = [
     "Untagged",
     "ValidationError",
     "__version__",
+    "cfg",
+    "config",
     "field",
     "json",
     "json_schema",
