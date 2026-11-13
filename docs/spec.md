@@ -430,6 +430,8 @@ All formats have the same API and share the same internal data model. Attributes
 | `ox.toml` | toml | TOML 1.0 |
 | `ox.msgpack` | rmp | Official timestamp (ext −1) for `datetime` (D20) |
 
+`ox.urlencoded` and `ox.pairs` read query strings, forms, headers and cookies (section 5.6); they are not formats of documents and have their own functions.
+
 Each module exposes the same functions (full signatures in section 11):
 
 ```python
@@ -561,6 +563,29 @@ Numeric guarantees:
 - `float` round-trips exactly: the value read is the same, bit for bit.
 - `int` never loses precision; when the format cannot hold it, it is an error.
 - `Decimal` and `Fraction` are read from the text of the number, never through `float`.
+
+### 5.6 Pair sources: query strings, forms, headers and cookies (OX-3)
+
+A host that reads the parameters of a request wants one decode call per source, and a model per source (Douro synthesizes one per handler: wire names are the aliases of its fields). Two modules read the sources that are not documents; both are **always `lax`** (section 4.5), take only a **model** as the type, and return the model or raise `ox.ValidationError` (`ox.DecodeError` when the source cannot be read):
+
+```python
+ox.urlencoded.decode(data, type, *, limits=None, max_errors=100, unknown=None)   # -> T
+ox.pairs.decode(pairs, type, *, case_insensitive=False, limits=None, max_errors=100, unknown=None)  # -> T
+```
+
+- **`ox.urlencoded.decode`** reads a raw query string (`a=1&b=2`, without the `?`) or an `application/x-www-form-urlencoded` body, given as `bytes`, `bytearray`, `memoryview` or `str`.
+  - Pairs are separated by `&` and split at the first `=`. An empty segment (`a=1&&b=2`) is skipped, a name without `=` (`flag`) has the value `""`, and `;` is not a separator.
+  - **Percent-decoding.** `%XX` is one byte (either case of the digits) and `+` is a space, in names and in values; `%2B` is a plus sign and `%20` is a space. The decoded bytes must be UTF-8, strictly: `%ff`, a cut sequence such as `%C3` or an overlong form is a `syntax` problem that says to encode text as UTF-8. A `%` that is not followed by two hexadecimal digits (`%zz`, `%4`, a final `%`) is a `syntax` problem that says to write a literal `%` as `%25`. Raw bytes that are not UTF-8 are refused in the same way.
+  - A `syntax` problem is reported where the text is: its path is the name of the field and its pointer `/q`, or the root (`""`) when the fault is in a name. `ctx` has `line` (always 1), `column` (the byte offset of the fault, from 1) and `format` (`"urlencoded"`). Reading stops at the fault, so the problems found before it are kept and nothing after it is read: the error is a `DecodeError`.
+- **`ox.pairs.decode`** reads `(name, value)` pairs that arrive already split: headers, cookies, anything else. Names and values are `str` or UTF-8 `bytes` (a `bytes` that is not UTF-8 is a `syntax` problem with `format="pairs"`), and nothing is percent-decoded. `pairs` is any iterable of pairs, or a mapping (read by `.items()`); anything else is a `TypeError` that says what to pass. **`case_insensitive=True`** matches names without regard to ASCII case, as header names are matched (`x-request-id` is the field `X-Request-Id`; names are grouped the same way, so `Accept` and `accept` are the values of one name). oxiform does not map `_` to `-`: a host that reads `x_request_id` as the header `x-request-id` (Douro does) gives the field that wire name, `ox.field(rename="X-Request-Id")`, as it gives an alias to any query parameter.
+- **Names are wire names.** A name is matched to a field by its wire name (`rename=`) or one of its `aliases`, as a key is in JSON. Two names that reach one field (an alias and the wire name, or two spellings of a header) are a `duplicate_key` problem for a field that takes one value.
+- **Repeated names.** A name given more than once gives a field that is a `list[T]`, `tuple[T, ...]`, `tuple[A, B]`, `set[T]` or `frozenset[T]` (also `Optional` of one) its values in the order they were given; a single value is a sequence of one. For any other field a repeated name is a **`duplicate_key`** problem (`input` is the name; it is not "the last one wins"), and a `Union` with a sequence variant counts as a scalar. Problems in a sequence point at the value: `/ids/1`.
+- **Absent and empty.** A field with a default takes it. A field that is `T | None` and has no default is `None`, never `missing`: an absent query parameter means "not set". Any other field without a default is a `missing` problem. A value `""` is `None` for `T | None` where `T` has no empty form, exactly as in section 4.5 (`size=` is `None` for `int | None`, and `q=` is `""` for `str | None`).
+- **Scalars** are read as section 4.5 says, at any depth (`ids: list[int]` reads `ids=1&ids=2`), and constraints apply after coercion. A field that is a nested model or a `dict` cannot be written as text: it gets the `type` problem of any lax mismatch.
+- **Unknown names** follow `unknown=` as in JSON (the model's option, overridden per call): ignored by default, an `unknown_field` problem for each one with `"forbid"`.
+- **Limits.** `max_bytes` bounds the whole source (the length of the query string, or the total bytes of names and values), `max_items` the number of pairs, the number of distinct names and the values of a sequence, and `max_str_len` every decoded name and value, in bytes. Exceeding one is `limit_exceeded`, with `ctx.limit`, as in a document. `max_errors` is as in section 4.7.
+- **Problems are ready to combine** (section 4.7): paths start with the wire name of the field, so `e.with_source("query")` gives `/query/page`, `ValidationError.combine` merges them with a body's, and `unreadable_sources()` names a query that could not be read.
+- The plan is the one of `ox.json.decode` for the same type: there is one plan cache, and decoding a model from a query string compiles nothing that JSON had not.
 
 ## 6. Layered configuration (`oxiform.config`)
 
@@ -877,7 +902,13 @@ A native Python extension in another cdylib (Douro's `douro._native`) validates 
 | `report_view`, `report_in_source`, `report_combine`, `report_free` | The issues as C views; the source prefix and the combination of several reports (OX-4); the host builds its own problem |
 | `limits_default`, `limits_none`, `status_message` | The limits of oxiform, to start from; a sentence for each status that says what to do |
 
-Only `OX_FORMAT_JSON` exists in 1.0; another format is `OX_UNSUPPORTED`, and a later minor adds one.
+`decode` and `encode` read and write `OX_FORMAT_JSON` only; another format is `OX_UNSUPPORTED`, and a later minor adds one. ABI 1.1 appended one function, after `report_free`:
+
+| Function (ABI 1.1) | What it does |
+| --- | --- |
+| `decode_pairs(plan, format, data, len, pairs, pair_count, options, &value, &report)` | OX-3 (section 5.6): reads a source of pairs as the model of `plan`, always in lax mode. `OX_FORMAT_URLENCODED` (2) reads the query string or form body `data[..len]` and wants `pairs` null and `pair_count` 0; `OX_FORMAT_PAIRS` (3) reads `pair_count` `OxPair { name: OxStr, value: OxStr }` (headers, cookies; UTF-8, not percent-decoded) and wants `data` null and `len` 0. Anything else in the unused arguments is `OX_INVALID_ARGUMENT`, another format `OX_UNSUPPORTED`, and a plan that is not a model `OX_INVALID_ARGUMENT`. The results, ownership, statuses and the `format` of a `syntax` issue (`"urlencoded"`, `"pairs"`) are those of `decode`; issues are ready for `report_in_source` |
+
+`OxPairsOptions` is size-prefixed like `OxDecodeOptions` (its first size is the one of ABI 1.1, and a `struct_size` below it is `OX_INVALID_ARGUMENT`): `struct_size`, `flags` (`OX_PAIRS_CASE_INSENSITIVE`; another bit is `OX_UNSUPPORTED`), `max_errors` and `limits` (as in `OxDecodeOptions`; `max_bytes` bounds the whole source, `max_items` the pairs and the distinct names, `max_str_len` each decoded name and value), `unknown` and `reserved`. There is no `mode` and no `context`: pairs are always lax. `OxPair` is frozen within a major, like `OxStr`.
 
 **Options.** `OxDecodeOptions` is size-prefixed: `struct_size`, `mode` (`OX_MODE_STRICT`, `OX_MODE_LAX`), `max_errors` (0 is 100, 1 is "stop at the first"), a pointer to `OxLimits` (null is the defaults; in an `OxLimits` a host fills in, **0 in a size field is the default of that field**, as `max_errors` 0 is, so `{ .struct_size = sizeof l, .max_bytes = N }` changes one limit and keeps the rest; `u64::MAX`, or starting from `limits_none`, removes a limit, and a limit of 0 itself cannot be written, 1 being the smallest; `max_depth` stays at most 128), `unknown` (`OX_UNKNOWN_MODEL`, `_IGNORE`, `_FORBID`: the per-call override of the `unknown=` option of every model, OX-9), `flags` (none are defined yet: a bit that is set is refused) and `context` (the validation context of OX-11: a borrowed `PyObject*`, reserved, and refused unless null so that it is never silently ignored). `OxEncodeOptions` has `flags` (`OX_ENCODE_SORT_KEYS`, `OX_ENCODE_INDENT`) and `indent`. Every struct a host fills is size-prefixed, which means:
 
@@ -895,7 +926,7 @@ Only `OX_FORMAT_JSON` exists in 1.0; another format is `OX_UNSUPPORTED`, and a l
 - The table starts with `abi_major`, `abi_minor` and `struct_size`, so a host reads the version before it knows how long the table is.
 - A **major** bump is any incompatible change: a field removed, moved or reinterpreted, a function that behaves differently. oxiform then exports a new capsule (`_ABI_V2`) and keeps the previous one for at least two minor releases. A host built for major N looks for `_ABI_V<N>` in `_ABI_MAJORS` and refuses another major at import with an `ImportError` that says which majors are installed and what to do (install an oxiform release that exports N, or rebuild the host against the installed release).
 - A **minor** bump is additive: a function at the end of the table, a field at the end of a size-prefixed struct, a constant. A host built for minor M needs an oxiform that exports at least M, and checks `abi_minor >= M` and `struct_size >= size_of::<OxiformApi>()` at import (`ImportError`: "needs oxiform ABI 1.2 or newer ... upgrade oxiform"); a newer oxiform serves an older host unchanged, because the host reads only the prefix it knows.
-- **OX-3 (pair-source decoding)** is a minor addition by design: a `decode_pairs` function at the end of the table, with its own size-prefixed options, and `OX_FORMAT_*` values for sources that are not documents. OX-11 fills `context` and adds the functions that build it; OX-6 and OX-8 add fields and functions in the same way.
+- **OX-3 (pair-source decoding)** was the first minor addition (**1.1**), as designed: `decode_pairs` at the end of the table, with its own size-prefixed options, and `OX_FORMAT_*` values for sources that are not documents. `API_SIZE_V1_0` is the size of the 1.0 table (everything up to `report_free`), which is a prefix of the 1.1 one, field for field (a test compares every offset); `table_from_pointer` and `import()` of a host built for 1.1 refuse a 1.0 oxiform at import with the clear message (`needs oxiform ABI 1.1 or newer ... upgrade oxiform`), while a host built for 1.0 reads only the first `API_SIZE_V1_0` bytes of the table of a 1.1 oxiform and keeps working (`tests/test_abi_host.py` runs one: `examples/abi-host/src/legacy.rs` is the 1.0 table as released, used through the live capsule). OX-11 fills `context` and adds the functions that build it; OX-6 and OX-8 add fields and functions in the same way.
 - The package version of oxiform and the ABI version are independent; the ABI version is in the changelog of each release.
 
 **Ownership and lifetimes.** Every pointer has one owner at any time:
@@ -1009,6 +1040,10 @@ iter_decode(source, type=Any, *, path=None, **opcoes_de_decode) -> Iterator[T]  
 decode_many(docs, type, *, on_error="raise" | "collect", threads=1, **opcoes_de_decode) -> DecodeResult
 Encoder(*, type=None, **opcoes_de_encode), Decoder(type, **opcoes_de_decode)  # .encode(obj, *, type=None), .encode_into(obj, buf), .decode()
 # ox.json only: encode(..., indent=None, sort_keys=False); iter_decode(..., lines=False)
+
+# --- pair sources (section 5.6) ---
+ox.urlencoded.decode(data, type, *, limits=None, max_errors=100, unknown=None) -> T         # lax; type is a model
+ox.pairs.decode(pairs, type, *, case_insensitive=False, limits=None, max_errors=100, unknown=None) -> T
 ox.DecodeResult                    # .values, .errors
 
 # --- types and constraints ---
@@ -1150,8 +1185,9 @@ The gate (≤ 1.1×) is not met. Following this section's rule, the value propos
 
 ### 12.4 Next steps
 
-- [x] The embedding ABI (OX-1, section 9.5): a versioned capsule `_ABI_V1` (1.0) with plan handles, decode from a host buffer, encode into a host buffer (also against a declared type), structured issues with source prefixes and combination, and per-call `unknown=` (OX-9). Options are size-prefixed with `max_errors` next to `mode`, so OX-3 (pair sources) and OX-11 (context) are minor additions
+- [x] The embedding ABI (OX-1, section 9.5): a versioned capsule `_ABI_V1` (1.0) with plan handles, decode from a host buffer, encode into a host buffer (also against a declared type), structured issues with source prefixes and combination, and per-call `unknown=` (OX-9). Options are size-prefixed with `max_errors` next to `mode`, so OX-3 (pair sources, ABI 1.1 and section 5.6) and OX-11 (context) are minor additions
 - [x] Error path prefixes and combined reports for a host that decodes several sources of one request (OX-4, section 4.7): `with_source`, `combine`, `to_problem(status=, type=, instance=)`, and `Report::combine` in the engine, and through the embedding ABI as `report_in_source` and `report_combine` (section 9.5)
+- [x] Pair sources (OX-3, section 5.6): `ox.urlencoded.decode` and `ox.pairs.decode`, lax mode with percent-decoding, repeated names as sequences, case-insensitive header names and per-call `unknown=`, and `decode_pairs` through the embedding ABI as a minor addition (ABI 1.1; a host built for 1.0 keeps working)
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
 - [x] Create the repository with the structure from section 12.2
 - [x] Phase 0 prototype (section 12.2)
