@@ -62,7 +62,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: python -m venv .venv
-      - run: .venv/bin/python -m pip install maturin pytest pyright ruff
+      - run: .venv/bin/python -m pip install maturin pytest pyright ruff jsonschema
       - run: .venv/bin/maturin develop --release
       # The sample host of the embedding ABI, built as any extension that uses oxiform would be.
       - run: .venv/bin/maturin develop --release -m examples/abi-host/Cargo.toml
