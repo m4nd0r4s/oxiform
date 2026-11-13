@@ -224,6 +224,8 @@ pub struct StructDescription {
     /// The key that holds the tag, when the structure declares one: present in the input, it
     /// must hold `tag`.
     pub tag_field: Option<String>,
+    /// Whether the sink checks each instance after it is built (`@ox.validator` on the model).
+    pub validated: bool,
 }
 
 /// One field of a structure.
@@ -238,6 +240,8 @@ pub struct FieldDescription {
     pub value_type: TypeDescription,
     /// Whether a missing key takes a default instead of being an error.
     pub has_default: bool,
+    /// Whether the sink checks the value of this field once it is read (`@ox.validator`).
+    pub validated: bool,
 }
 
 /// A complete description: the root type and every structure it reaches.

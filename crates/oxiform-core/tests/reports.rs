@@ -5,6 +5,7 @@ use oxiform_core::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, 
 fn issue(code: ErrorCode, path: &[&str]) -> Issue {
     Issue {
         code,
+        user_code: None,
         path: path
             .iter()
             .map(|key| PathSegment::Key((*key).to_owned()))

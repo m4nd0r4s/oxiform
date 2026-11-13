@@ -41,6 +41,7 @@ __all__ = [
     "StructDescription",
     "TemporalKind",
     "TypeDescription",
+    "ValidatorDescription",
 ]
 
 TemporalKind: TypeAlias = Literal["datetime", "naive_datetime", "date", "time", "timedelta"]
@@ -84,6 +85,24 @@ is required)."""
 
 
 @dataclass(frozen=True, slots=True)
+class ValidatorDescription:
+    """A function of ``@ox.validator``, called with ``cls`` and the value of a field, or with
+    the instance of a model (spec section 4.3)."""
+
+    name: str
+    """The qualified name of the function, for messages."""
+    function: Callable[..., object]
+    cls: type
+    """The class a field validator receives."""
+    context: str | None
+    """The parameter that receives the validation context, or ``None``."""
+    context_required: bool
+    """Whether it cannot run without a context."""
+    context_none_when_absent: bool
+    """Whether it is given ``None`` as the context when the decode has none."""
+
+
+@dataclass(frozen=True, slots=True)
 class FieldDescription:
     """A field read from a key of the input."""
 
@@ -92,6 +111,8 @@ class FieldDescription:
     aliases: tuple[str, ...]
     value_type: TypeDescription
     default: Default
+    validators: tuple[ValidatorDescription, ...] = ()
+    """What checks the value once it is read, in order."""
 
 
 Member: TypeAlias = (
@@ -125,6 +146,8 @@ class StructDescription:
     """The value that identifies the structure in a tagged union."""
     tag_field: str | None
     """The key that holds the tag, when the model declares one."""
+    validators: tuple[ValidatorDescription, ...] = ()
+    """What checks each instance once it is built, in order."""
 
 
 @dataclass(frozen=True, slots=True)

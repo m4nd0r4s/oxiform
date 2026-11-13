@@ -107,6 +107,7 @@ impl EncodeFailure {
 fn pointer(path: &[PathSegment]) -> String {
     let issue = oxiform_core::issues::Issue {
         code: oxiform_core::issues::ErrorCode::Type,
+        user_code: None,
         path: path.to_vec(),
         message: String::new(),
         input: None,

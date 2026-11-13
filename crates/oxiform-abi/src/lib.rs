@@ -28,8 +28,9 @@
 //! | an `OxPlan` | oxiform | the host: `plan_release` once per reference | until the last reference is released; the compiled type stays in the plan cache anyway. Release plans before the interpreter shuts down: afterwards `plan_release` leaks the handle |
 //! | an `OxReport` and its views | oxiform | the host: `report_free` (or a successful `report_combine`, which consumes it) | until freed; `report_in_source` invalidates the views |
 //! | output bytes | the host (`OxBuffer`) | the host | oxiform appends and never keeps `data`; it grows the buffer only through the host's `reserve` callback, so no memory crosses the allocator of two cdylibs |
-//! | `PyObject*` arguments (`target`, `obj`) | the host | the host | borrowed for the call |
-//! | static strings (`status_message`, `oxiform_version`, codes) | oxiform | nobody | forever |
+//! | `PyObject*` arguments (`target`, `obj`, `context`) | the host | the host | borrowed for the call |
+//! | static strings (`status_message`, `oxiform_version`, the codes oxiform defines) | oxiform | nobody | forever |
+//! | the `code` of an issue a validator raised | oxiform, in the report | the host, with the report | until `report_free`, like the `message`: do not keep the pointer past it |
 //!
 //! # Threads
 //!
@@ -117,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn the_table_of_abi_1_1_starts_with_the_table_of_abi_1_0_unchanged() {
+    fn the_table_of_abi_1_2_starts_with_the_table_of_abi_1_0_unchanged() {
         use core::mem::offset_of;
         macro_rules! same_offset {
             ($($field:ident),*) => {$(
@@ -152,7 +153,44 @@ mod tests {
         assert!(size_of::<OxiformApi>() > API_SIZE_V1_0);
         // What was added in 1.1 is appended after the last function of 1.0.
         assert_eq!(offset_of!(OxiformApi, decode_pairs), API_SIZE_V1_0);
-        assert_eq!(ABI_MINOR, 1);
+        // 1.2 (OX-11, the validation context) added no function: the table is the one of 1.1,
+        // and decode_pairs is its last field.
+        assert_eq!(
+            size_of::<OxiformApi>(),
+            offset_of!(OxiformApi, decode_pairs) + size_of::<usize>()
+        );
+        assert_eq!(ABI_MINOR, 2);
+    }
+
+    #[test]
+    fn a_host_built_for_1_2_refuses_a_1_1_oxiform_though_the_table_has_the_same_size() {
+        // The table did not grow in 1.2, so the size check alone would let a 1.1 oxiform in, and
+        // it would refuse the context call by call: the minor version refuses it at import.
+        let error = check_header(
+            header(1, 1, size_of::<OxiformApi>()),
+            1,
+            2,
+            size_of::<OxiformApi>(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            VersionError::Minor {
+                wanted: (1, 2),
+                found: (1, 1)
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "this extension needs oxiform ABI 1.2 or newer, but the installed oxiform exports ABI 1.1; upgrade oxiform"
+        );
+        // And a host built for 1.1 or 1.0 keeps working on a 1.2 oxiform.
+        for (minor, size) in [(1, size_of::<OxiformApi>()), (0, API_SIZE_V1_0)] {
+            assert_eq!(
+                check_header(header(1, 2, size_of::<OxiformApi>()), 1, minor, size),
+                Ok(())
+            );
+        }
     }
 
     #[test]

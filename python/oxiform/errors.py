@@ -1,6 +1,6 @@
 """Exceptions raised by oxiform."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import NotRequired, Self, TypedDict, cast
 
 from oxiform._problem import check_status, status_title
@@ -12,6 +12,7 @@ __all__ = [
     "DecodeError",
     "EncodeError",
     "ErrorDetails",
+    "Invalid",
     "OxiformError",
     "SchemaError",
     "ValidationError",
@@ -33,6 +34,71 @@ class EncodeError(OxiformError):
         super().__init__(message)
         self.pointer = pointer
         """Where the object is, as a JSON Pointer from the value passed to ``encode``."""
+
+
+class Invalid(OxiformError, ValueError):
+    """What a validator raises to reject a value: one problem of the decode, with its own
+    message and, if it wants, its own ``code`` and ``path`` (spec section 4.3).
+
+    ``path`` is one segment (``"password2"``, ``0``) or a sequence of them, relative to the value
+    the validator checks. ``ValueError`` and ``TypeError`` raised in a validator are the same
+    problem with the code ``"invalid"``; raise ``Invalid`` for a code of your own, a path, or a
+    message written for the client that stays when the value is a secret.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "invalid",
+        path: str | int | Sequence[str | int] | None = None,
+    ) -> None:
+        if not isinstance(message, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(
+                f"ox.Invalid takes the message as a str, not {type(message).__name__}; "
+                'write raise ox.Invalid("what is wrong, and what to do")'
+            )
+        if not isinstance(code, str) or not code:  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(
+                f"ox.Invalid code must be a non-empty str, not {code!r}; "
+                'use a short stable name such as code="reserved", or leave it out for "invalid"'
+            )
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.path = _segments(path)
+        """The segments of the path, relative to the checked value; empty for the value itself."""
+
+    def __reduce__(self) -> tuple[Callable[..., "Invalid"], tuple[object, ...]]:
+        # The keyword-only arguments are lost by the default reduce, so pickling and copying
+        # (multiprocessing, `copy.copy`) go through here.
+        return (_rebuild_invalid, (self.message, self.code, self.path))
+
+
+def _rebuild_invalid(message: str, code: str, path: tuple[str | int, ...]) -> "Invalid":
+    return Invalid(message, code=code, path=path)
+
+
+def _segments(path: object) -> tuple[str | int, ...]:
+    if path is None:
+        return ()
+    if isinstance(path, (str, int)):
+        path = (path,)
+    elif not isinstance(path, Sequence):
+        raise TypeError(
+            f"ox.Invalid path must be a str, an int or a sequence of them, not "
+            f"{type(path).__name__}; write path='password2' or path=('items', 0)"
+        )
+    segments: list[str | int] = []
+    for segment in cast("Sequence[object]", path):
+        if isinstance(segment, bool) or not isinstance(segment, (str, int)):
+            raise TypeError(
+                f"ox.Invalid path segments are str keys or int indices, not {segment!r}"
+            )
+        if isinstance(segment, int) and segment < 0:
+            raise TypeError(f"ox.Invalid path indices start at 0, not {segment}")
+        segments.append(segment)
+    return tuple(segments)
 
 
 class ErrorDetails(TypedDict):

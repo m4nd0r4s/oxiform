@@ -3,7 +3,7 @@
 use std::cell::OnceCell;
 
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
-use oxiform_core::sink::Sink;
+use oxiform_core::sink::{Sink, Verdict};
 use oxiform_core::temporal::Temporal;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
@@ -19,16 +19,23 @@ use crate::description::{FieldDefault, FieldSetter, Layout, MemberSource};
 pub(crate) struct PythonSink<'run, 'py> {
     pub(crate) py: Python<'py>,
     pub(crate) compiled: &'run CompiledType,
+    /// The `context=` of the decode, handed as it is to the validators that ask for it.
+    pub(crate) context: Option<Bound<'py, PyAny>>,
     /// The digit limit of Python, read the first time an integer is long enough to ask for it
     /// and kept for the rest of the decode.
     digit_limit: OnceCell<Option<usize>>,
 }
 
 impl<'run, 'py> PythonSink<'run, 'py> {
-    pub(crate) fn new(py: Python<'py>, compiled: &'run CompiledType) -> Self {
+    pub(crate) fn new(
+        py: Python<'py>,
+        compiled: &'run CompiledType,
+        context: Option<Bound<'py, PyAny>>,
+    ) -> Self {
         Self {
             py,
             compiled,
+            context,
             digit_limit: OnceCell::new(),
         }
     }
@@ -198,6 +205,23 @@ impl<'py> Sink for PythonSink<'_, 'py> {
     ) -> PyResult<Self::Value> {
         let runtime = &self.compiled.runtime.structs[structure.index()];
         build(self.py, &runtime.layout, &runtime.defaults, fields)
+    }
+
+    fn check_field(
+        &mut self,
+        structure: StructId,
+        field: usize,
+        value: Self::Value,
+    ) -> PyResult<Verdict<Self::Value>> {
+        self.run_field_validators(structure, field, value)
+    }
+
+    fn check_model(
+        &mut self,
+        structure: StructId,
+        instance: Self::Value,
+    ) -> PyResult<Verdict<Self::Value>> {
+        self.run_model_validators(structure, instance)
     }
 }
 

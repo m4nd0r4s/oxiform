@@ -12,7 +12,7 @@ use pyo3::types::{PyBytes, PyString};
 use crate::compiled::{CompiledType, compiled_for};
 use crate::decode::read_input;
 use crate::errors::report_error;
-use crate::options::{PyLimits, decode_options, max_errors_argument};
+use crate::options::{PyLimits, context_argument, decode_options, max_errors_argument};
 use crate::sink::PythonSink;
 
 /// What pairs are read from.
@@ -45,6 +45,7 @@ pub(crate) fn decode_pairs<'py>(
     compiled: &CompiledType,
     options: &Options,
     case_insensitive: bool,
+    context: Option<Bound<'py, PyAny>>,
 ) -> Result<Bound<'py, PyAny>, Failure<PyErr>> {
     let mut builder = PairsBuilder::new(&options.limits, case_insensitive);
     match source {
@@ -56,7 +57,7 @@ pub(crate) fn decode_pairs<'py>(
         }
     }
     let mut reader = builder.finish();
-    let mut sink = PythonSink::new(py, compiled);
+    let mut sink = PythonSink::new(py, compiled, context);
     execute_pairs(
         &compiled.plan,
         &mut reader,
@@ -87,10 +88,11 @@ fn model_of<'py>(
 /// model, in lax mode: `%XX` and `+` are decoded, a name that is repeated gives a list, a tuple or
 /// a set its values in order, and issues name the field by its wire name (`/page`).
 #[pyfunction]
-#[pyo3(name = "urlencoded_decode", signature = (data, r#type, *, limits = None, max_errors = 100, unknown = None))]
+#[pyo3(name = "urlencoded_decode", signature = (data, r#type, *, context = None, limits = None, max_errors = 100, unknown = None))]
 pub(crate) fn urlencoded_decode<'py>(
     data: &Bound<'py, PyAny>,
     r#type: &Bound<'py, PyAny>,
+    context: Option<&Bound<'py, PyAny>>,
     limits: Option<&PyLimits>,
     #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
     unknown: Option<&str>,
@@ -107,6 +109,7 @@ pub(crate) fn urlencoded_decode<'py>(
             &compiled,
             &options,
             false,
+            context_argument(context),
         ),
         r#type,
         "urlencoded",
@@ -118,11 +121,12 @@ pub(crate) fn urlencoded_decode<'py>(
 /// regard to ASCII case, as header names are matched; a name that is repeated gives a list, a
 /// tuple or a set its values in order.
 #[pyfunction]
-#[pyo3(name = "pairs_decode", signature = (pairs, r#type, *, case_insensitive = false, limits = None, max_errors = 100, unknown = None))]
+#[pyo3(name = "pairs_decode", signature = (pairs, r#type, *, case_insensitive = false, context = None, limits = None, max_errors = 100, unknown = None))]
 pub(crate) fn pairs_decode<'py>(
     pairs: &Bound<'py, PyAny>,
     r#type: &Bound<'py, PyAny>,
     case_insensitive: bool,
+    context: Option<&Bound<'py, PyAny>>,
     limits: Option<&PyLimits>,
     #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
     unknown: Option<&str>,
@@ -145,6 +149,7 @@ pub(crate) fn pairs_decode<'py>(
             &compiled,
             &options,
             case_insensitive,
+            context_argument(context),
         ),
         r#type,
         "pairs",

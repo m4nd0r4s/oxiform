@@ -63,10 +63,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             valid &= field?;
         }
         valid &= self.pairs_missing(structure, &seen, &mut values)?;
-        if !valid {
-            return Ok(None);
-        }
-        self.emit(|sink| sink.instance(*id, &mut values))
+        self.finish_structure(*id, structure, valid, &mut values, &seen)
     }
 
     /// Reads the values of one key, which start with the sequence the reader emits. Returns

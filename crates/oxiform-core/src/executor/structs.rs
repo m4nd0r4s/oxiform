@@ -5,9 +5,9 @@ use smallvec::{SmallVec, smallvec};
 use super::{Executor, Step, Stop};
 use crate::description::UnknownFields;
 use crate::events::{Event, EventReader};
-use crate::issues::{ContextValue, ErrorCode, PathSegment};
+use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment};
 use crate::plan::{StructId, StructPlan};
-use crate::sink::Sink;
+use crate::sink::{Rejection, Sink, Verdict};
 
 /// The fields read so far.
 struct Slots<V> {
@@ -65,10 +65,99 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             valid &= field?;
         }
         valid &= self.check_missing(structure, &slots.seen)?;
+        self.finish_structure(id, structure, valid, &mut slots.values, &slots.seen)
+    }
+
+    /// Builds the instance of a structure whose map was read, running its validators. `valid`
+    /// is whether every field was read without a problem; `seen` tells which fields the input
+    /// gave, and only those are validated: a default was checked when the plan was compiled.
+    pub(super) fn finish_structure(
+        &mut self,
+        id: StructId,
+        structure: &StructPlan,
+        mut valid: bool,
+        values: &mut [Option<S::Value>],
+        seen: &[bool],
+    ) -> Step<S> {
+        if structure.field_validators {
+            valid &= self.check_fields(id, structure, values, seen)?;
+        }
         if !valid {
             return Ok(None);
         }
-        self.emit(|sink| sink.instance(id, &mut slots.values))
+        let instance = self.emit(|sink| sink.instance(id, values))?;
+        match instance {
+            Some(instance) if structure.model_validators => self.check_instance(id, instance),
+            other => Ok(other),
+        }
+    }
+
+    /// Runs the validators of the fields the input gave, in field order, each on a field that
+    /// is valid so far. Returns whether every one accepted its value.
+    #[cold]
+    fn check_fields(
+        &mut self,
+        id: StructId,
+        structure: &StructPlan,
+        values: &mut [Option<S::Value>],
+        seen: &[bool],
+    ) -> Result<bool, Stop<S::Error>> {
+        let mut valid = true;
+        for (index, field) in structure.fields.iter().enumerate() {
+            if !field.validated || !seen[index] {
+                continue;
+            }
+            let Some(value) = values[index].take() else {
+                continue;
+            };
+            let mark = self.issues.len();
+            let checked = match self.sink.check_field(id, index, value) {
+                Ok(Verdict::Accept(value)) => {
+                    values[index] = Some(value);
+                    Ok(())
+                }
+                Ok(Verdict::Reject(rejections)) => {
+                    valid = false;
+                    self.record_rejections(rejections)
+                }
+                Err(error) => Err(Stop::Sink(error)),
+            };
+            self.prefix_issues(mark, || PathSegment::Key(field.wire_name.clone()));
+            checked?;
+        }
+        Ok(valid)
+    }
+
+    /// Runs the validators of a structure on its instance. A rejection is at the structure: the
+    /// containers around it add their steps on the way out.
+    #[cold]
+    fn check_instance(&mut self, id: StructId, instance: S::Value) -> Step<S> {
+        match self.sink.check_model(id, instance) {
+            Ok(Verdict::Accept(instance)) => Ok(Some(instance)),
+            Ok(Verdict::Reject(rejections)) => {
+                self.record_rejections(rejections)?;
+                Ok(None)
+            }
+            Err(error) => Err(Stop::Sink(error)),
+        }
+    }
+
+    /// Records what a validator rejected as issues of code `invalid`, at the paths it gave.
+    fn record_rejections(&mut self, rejections: Vec<Rejection>) -> Result<(), Stop<S::Error>> {
+        for rejection in rejections {
+            self.issues.push(Issue {
+                code: ErrorCode::Invalid,
+                user_code: rejection.code,
+                path: rejection.path,
+                message: rejection.message,
+                input: None,
+                context: Vec::new(),
+            });
+            if self.issues.len() >= self.max_errors {
+                return Err(Stop::TooManyErrors);
+            }
+        }
+        Ok(())
     }
 
     /// Reads the value of field `index` (`None`: an unknown key),  Returns whether it is valid.

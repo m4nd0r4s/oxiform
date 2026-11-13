@@ -17,6 +17,25 @@ user = ox.json.decode(raw_bytes, User)
 ox.yaml.encode(user)
 ```
 
+Python logic that needs data from outside the input (who is asking, which tenant) is a validator,
+and the host passes that data as `context=`:
+
+```python
+@ox.model
+class Member:
+    email: str
+
+    @ox.validator("email")
+    def in_your_tenant(cls, value: str, request: ox.Context[Request]) -> str:
+        if not value.endswith("@" + request.tenant):
+            raise ox.Invalid("not an address of your tenant", code="tenant")
+        return value
+
+member = ox.json.decode(raw_bytes, Member, context=request)
+```
+
+See [examples/validation_context.py](examples/validation_context.py) and section 4.3 of the spec.
+
 **Status:** early development (phase 0, prototype). Nothing is published yet. The design is in
 [docs/spec.md](docs/spec.md).
 

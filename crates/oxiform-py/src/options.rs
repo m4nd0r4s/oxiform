@@ -143,6 +143,14 @@ size_argument!(max_items_argument, "max_items");
 size_argument!(max_str_len_argument, "max_str_len");
 size_argument!(max_int_digits_argument, "max_int_digits");
 
+/// The `context=` argument of a decode call: any object, handed as it is to the validators that
+/// ask for it. `None` is no context.
+pub(crate) fn context_argument<'py>(
+    context: Option<&Bound<'py, PyAny>>,
+) -> Option<Bound<'py, PyAny>> {
+    context.filter(|context| !context.is_none()).cloned()
+}
+
 /// The options of one decode call, from the arguments Python passed.
 pub(crate) fn decode_options(
     mode: &str,

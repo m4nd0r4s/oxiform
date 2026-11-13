@@ -10,7 +10,7 @@ __version__: str
 
 ABI_VERSION: tuple[int, int]
 """`(major, minor)` of the embedding C ABI this build exports through the capsule `_ABI_V1`
-(1.1 added `decode_pairs`)."""
+(1.1 added `decode_pairs`, 1.2 the validation context)."""
 _ABI_MAJORS: tuple[int, ...]
 """Every major version of the ABI that has a capsule, as `_ABI_V<major>`."""
 _ABI_V1: object
@@ -64,6 +64,7 @@ def json_decode(
     data: bytes | bytearray | memoryview | str,
     *,
     mode: Mode = "strict",
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -74,6 +75,7 @@ def json_decode(
     type: type[_T],
     *,
     mode: Mode = "strict",
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -84,6 +86,7 @@ def json_decode(
     type: object,
     *,
     mode: Mode = "strict",
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -97,6 +100,7 @@ def urlencoded_decode(
     data: bytes | bytearray | memoryview | str,
     type: type[_T],
     *,
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -110,6 +114,7 @@ def urlencoded_decode(
     data: bytes | bytearray | memoryview | str,
     type: object,
     *,
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -120,6 +125,7 @@ def pairs_decode(
     type: type[_T],
     *,
     case_insensitive: bool = False,
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -133,6 +139,7 @@ def pairs_decode(
     type: object,
     *,
     case_insensitive: bool = False,
+    context: object | None = None,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
@@ -188,6 +195,9 @@ class JsonDecoder(Generic[_T]):
     ) -> JsonDecoder[Any]: ...
     @property
     def type(self) -> object: ...
-    def decode(self, data: bytes | bytearray | memoryview | str) -> _T: ...
+    def decode(
+        self, data: bytes | bytearray | memoryview | str, *, context: object | None = None
+    ) -> _T:
+        """Reads ``data``; ``context`` is what validators that ask for ``ox.Context`` receive."""
 
 class PlanHandle: ...

@@ -1,8 +1,29 @@
 //! Where the executor builds its output. The Python bridge creates Python objects; tests build
 //! plain Rust values.
 
+use crate::issues::PathSegment;
 use crate::plan::{ChoiceId, ConversionId, StructId};
 use crate::temporal::Temporal;
+
+/// What a validator found wrong with a value: one problem, which the executor records as an
+/// issue of code `invalid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    /// The code the validator chose, or `None` for the code `invalid`.
+    pub code: Option<String>,
+    pub message: String,
+    /// Where in the value the problem is, relative to the value the validator was given.
+    pub path: Vec<PathSegment>,
+}
+
+/// What a validator decided about a value.
+#[derive(Debug)]
+pub enum Verdict<V> {
+    /// The value is valid, as it was or replaced by the validator.
+    Accept(V),
+    /// The value is not valid. The value is gone: there is nothing to give the next validator.
+    Reject(Vec<Rejection>),
+}
 
 /// Builds the values the executor validated.
 pub trait Sink {
@@ -56,4 +77,28 @@ pub trait Sink {
         structure: StructId,
         fields: &mut [Option<Self::Value>],
     ) -> Result<Self::Value, Self::Error>;
+    /// Runs the validators of field `field` of `structure` on `value`, which was read and
+    /// passed its own type and constraints. Only called for a field the plan marks
+    /// `validated`, after the whole map was read, in field order. The default accepts the
+    /// value as it is.
+    fn check_field(
+        &mut self,
+        structure: StructId,
+        field: usize,
+        value: Self::Value,
+    ) -> Result<Verdict<Self::Value>, Self::Error> {
+        let _ = (structure, field);
+        Ok(Verdict::Accept(value))
+    }
+    /// Runs the validators of `structure` on `instance`, which was just built from fields that
+    /// all passed. Only called for a structure the plan marks `model_validators`. The default
+    /// accepts the instance.
+    fn check_model(
+        &mut self,
+        structure: StructId,
+        instance: Self::Value,
+    ) -> Result<Verdict<Self::Value>, Self::Error> {
+        let _ = structure;
+        Ok(Verdict::Accept(instance))
+    }
 }

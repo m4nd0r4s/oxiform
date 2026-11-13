@@ -12,7 +12,7 @@ use crate::types::{
 pub const ABI_MAJOR: u32 = 1;
 /// Additive changes (a new function at the end of the table, a new field at the end of a struct)
 /// bump the minor version. A host built for minor M needs an oxiform that exports at least M.
-pub const ABI_MINOR: u32 = 1;
+pub const ABI_MINOR: u32 = 2;
 
 /// The module that exports the capsules.
 pub const MODULE: &str = "oxiform._oxiform";

@@ -110,15 +110,16 @@ def host_problem(plan: Any, data: bytes, **options: Any) -> dict[str, Any]:
 
 
 def test_the_capsule_has_a_released_shaped_version() -> None:
-    assert _oxiform.ABI_VERSION == (1, 1)
+    assert _oxiform.ABI_VERSION == (1, 2)
     assert _oxiform._ABI_MAJORS == (1,)  # pyright: ignore[reportPrivateUsage]
     assert type(_oxiform._ABI_V1).__name__ == "PyCapsule"  # pyright: ignore[reportPrivateUsage]
-    assert host.abi_version() == (1, 1, _oxiform.__version__)
+    assert host.abi_version() == (1, 2, _oxiform.__version__)
 
 
 def test_a_host_built_for_the_same_or_an_older_minor_is_accepted() -> None:
-    assert host.import_as(1, 0) == (1, 1)
-    assert host.import_as(1, 1) == (1, 1)
+    assert host.import_as(1, 0) == (1, 2)
+    assert host.import_as(1, 1) == (1, 2)
+    assert host.import_as(1, 2) == (1, 2)
 
 
 @pytest.mark.parametrize("major", [0, 2, 7])
@@ -133,7 +134,7 @@ def test_a_host_built_for_another_major_refuses_with_what_to_install(major: int)
 
 def test_a_host_built_for_a_newer_minor_refuses_and_says_to_upgrade() -> None:
     with pytest.raises(
-        ImportError, match="needs oxiform ABI 1.99 or newer.*exports ABI 1.1.*upgrade"
+        ImportError, match="needs oxiform ABI 1.99 or newer.*exports ABI 1.2.*upgrade"
     ):
         host.import_as(1, 99)
 
@@ -378,12 +379,6 @@ def test_options_oxiform_cannot_honour_say_what_to_do(
     assert got == status and value is None and problem is None
     assert type(error) is error_type
     assert fragment in str(error)
-
-
-def test_a_context_is_reserved_and_never_silently_ignored() -> None:
-    status, value, _, error = raw_decode(context={"request": object()})
-    assert status == OX_UNSUPPORTED and value is None
-    assert isinstance(error, NotImplementedError) and "pass NULL" in str(error)
 
 
 def test_decode_with_no_plan_is_an_invalid_argument() -> None:
@@ -899,6 +894,226 @@ def test_pairs_and_a_body_combine_into_one_problem_through_the_abi() -> None:
     assert any(e["pointer"].startswith("/body/") for e in problem["errors"])
     ok = host.decode_request([("query", host.plan_for(PairsQuery), b"page=2", "urlencoded")])
     assert ok["query"].page == 2
+
+
+# --- the validation context (ABI 1.2, OX-11) ----------------------------------------------------
+
+
+class Request:
+    """What a host such as Douro passes as the context of a decode."""
+
+    def __init__(self, tenant: str, user: str = "ann") -> None:
+        self.tenant = tenant
+        self.user = user
+
+
+SEEN: list[object] = []
+
+
+@ox.model
+class Invite:
+    email: str
+    role: str = "user"
+
+    @ox.validator("email")
+    def in_tenant(cls, v: str, ctx: ox.Context[Request]) -> str:
+        SEEN.append(ctx)
+        if not v.endswith("@" + ctx.tenant):
+            raise ox.Invalid(f"not an address of {ctx.tenant}", code="tenant")
+        return v
+
+    @ox.validator
+    def only_admins_make_admins(self, ctx: ox.Context[Request]) -> None:
+        SEEN.append(ctx)
+        if self.role == "admin" and ctx.user != "root":
+            raise ox.Invalid("only root makes admins", path="role")
+
+
+@ox.model
+class InviteQuery:
+    email: str = ""
+    page: int = 1
+
+    @ox.validator("email")
+    def in_tenant(cls, v: str, ctx: ox.Context[Request]) -> str:
+        if v and not v.endswith("@" + ctx.tenant):
+            raise ox.Invalid("not in your tenant", code="tenant")
+        return v
+
+    @ox.validator
+    def page_budget(self, ctx: ox.Context[Request]) -> None:
+        if self.page > 3 and ctx.user != "root":
+            raise ox.Invalid("only root pages deep", path="page")
+
+
+def test_a_field_and_a_model_validator_receive_the_context_a_host_passes() -> None:
+    SEEN.clear()
+    request = Request("acme")
+    invite = host.plan_for(Invite).decode(b'{"email": "a@acme"}', context=request)
+    assert invite.email == "a@acme"
+    # Both validators got the very object the host passed: borrowed, not copied or wrapped.
+    assert len(SEEN) == 2 and SEEN[0] is request and SEEN[1] is request
+
+
+def test_validator_problems_come_back_as_the_host_problem_with_codes_and_paths() -> None:
+    plan = host.plan_for(Invite)
+    problem = host_problem(
+        plan, b'{"email": "a@other", "role": "admin"}', context=Request("acme", "ann")
+    )
+    assert problem["status"] == 422
+    assert [(e["code"], e["pointer"], e["message"]) for e in problem["errors"]] == [
+        ("tenant", "/email", "not an address of acme"),
+    ]
+    problem = host_problem(
+        plan, b'{"email": "a@acme", "role": "admin"}', context=Request("acme", "ann")
+    )
+    assert [(e["code"], e["pointer"]) for e in problem["errors"]] == [("invalid", "/role")]
+
+
+def test_the_abi_and_the_python_api_agree_on_validator_problems() -> None:
+    request = Request("acme")
+    body = b'{"email": "a@other", "role": "admin"}'
+    with pytest.raises(ValidationError) as expected:
+        ox.json.decode(body, Invite, context=request)
+    problem = host_problem(host.plan_for(Invite), body, context=request)
+    assert [(e["code"], e["pointer"]) for e in problem["errors"]] == [
+        (e["code"], e["pointer"]) for e in expected.value.errors()
+    ]
+    assert [e["message"] for e in problem["errors"]] == [
+        e["message"] for e in expected.value.errors()
+    ]
+
+
+def test_without_a_context_the_validator_says_to_pass_one_and_nothing_is_a_problem() -> None:
+    plan = host.plan_for(Invite)
+    with pytest.raises(TypeError, match="needs a validation context.*context="):
+        plan.decode(b'{"email": "a@acme"}')
+    status, value, problem, error = plan.decode_raw(b'{"email": "a@acme"}')
+    assert status == OX_PYTHON_ERROR and value is None and problem is None
+    assert isinstance(error, TypeError) and "options.context" in str(error)
+
+
+def test_raw_options_carry_the_context_and_options_of_a_later_minor_still_read_it() -> None:
+    plan = host.plan_for(Invite)
+    request = Request("acme")
+    status, value, problem, error = plan.decode_raw(b'{"email": "a@acme"}', context=request)
+    assert (status, problem, error) == (OX_OK, None, None) and value.email == "a@acme"
+    status, value, problem, error = plan.decode_raw(
+        b'{"email": "a@other"}', context=request, extra=64
+    )
+    assert status == OX_INVALID and problem["errors"][0]["code"] == "tenant"
+
+
+def test_a_plan_with_no_validators_ignores_the_context() -> None:
+    status, value, *_ = raw_decode(context={"anything": object()})
+    assert status == OX_OK and value.name == "x"
+
+
+def test_the_context_reaches_decode_pairs_and_the_urlencoded_source() -> None:
+    plan = host.plan_for(InviteQuery)
+    request = Request("acme", "ann")
+    assert plan.decode_urlencoded(b"email=a%40acme&page=2", context=request).page == 2
+    assert plan.decode_pairs([("email", "a@acme"), ("page", "3")], context=request).page == 3
+    with pytest.raises(host.HostProblem) as raised:
+        plan.decode_urlencoded(b"email=a%40other&page=2", context=request, source="query")
+    assert [(e["code"], e["pointer"]) for e in raised.value.args[0]["errors"]] == [
+        ("tenant", "/query/email"),
+    ]
+    with pytest.raises(host.HostProblem) as deep:
+        plan.decode_urlencoded(b"email=a%40acme&page=9", context=request, source="query")
+    assert [(e["code"], e["pointer"]) for e in deep.value.args[0]["errors"]] == [
+        ("invalid", "/query/page"),
+    ]
+    with pytest.raises(TypeError, match="context="):
+        plan.decode_urlencoded(b"email=a%40acme")
+    with pytest.raises(TypeError, match="context="):
+        plan.decode_pairs([("email", "a@acme")])
+
+
+def test_the_pairs_context_is_read_from_abi_1_2_on_and_a_1_1_struct_has_none() -> None:
+    plan = host.plan_for(InviteQuery)
+    request = Request("acme")
+    status, value, *_ = raw_pairs(plan, data=b"email=a%40acme", context=request)
+    assert status == OX_OK and value.email == "a@acme"
+    # A host built for ABI 1.1 passes the struct as it ended then (32 bytes): the bytes after it,
+    # `context` among them, are not read, so the validator finds no context and says so.
+    status, value, problem, error = raw_pairs(
+        plan, data=b"email=a%40acme", context=request, struct_size=32
+    )
+    assert status == OX_PYTHON_ERROR and value is None and problem is None
+    assert isinstance(error, TypeError) and "needs a validation context" in str(error)
+
+
+def test_one_context_serves_every_part_of_a_request_and_the_problems_combine() -> None:
+    request = Request("acme", "ann")
+    parts = [
+        ("query", host.plan_for(InviteQuery), b"email=a%40acme&page=9", "urlencoded"),
+        ("body", host.plan_for(Invite), b'{"email": "b@other"}', "strict"),
+    ]
+    with pytest.raises(host.HostProblem) as raised:
+        host.decode_request(parts, context=request)
+    found = [(e["code"], e["pointer"]) for e in problem_errors(raised.value)]
+    assert found == [("invalid", "/query/page"), ("tenant", "/body/email")]
+    with pytest.raises(ValidationError) as query:
+        ox.urlencoded.decode("email=a%40acme&page=9", InviteQuery, context=request)
+    with pytest.raises(ValidationError) as body:
+        ox.json.decode(b'{"email": "b@other"}', Invite, context=request)
+    expected = ValidationError.combine({"query": query.value, "body": body.value}).errors()
+    assert [dict(e) for e in problem_errors(raised.value)] == [dict(e) for e in expected]
+    ok = host.decode_request(
+        [("query", host.plan_for(InviteQuery), b"email=a%40acme", "urlencoded")], context=request
+    )
+    assert ok["query"].email == "a@acme"
+
+
+def test_a_validator_that_raises_something_else_is_that_exception_through_the_abi() -> None:
+    @ox.model
+    class Boom:
+        n: int
+
+        @ox.validator("n")
+        def explode(cls, v: int) -> int:
+            raise KeyError("boom")
+
+    plan = host.plan_for(Boom)
+    with pytest.raises(KeyError):
+        plan.decode(b'{"n": 1}')
+    status, value, problem, error = plan.decode_raw(b'{"n": 1}')
+    assert status == OX_PYTHON_ERROR and value is None and problem is None
+    assert isinstance(error, KeyError)
+
+
+def test_the_context_is_released_after_the_call() -> None:
+    import weakref
+
+    request = Request("acme")
+    reference = weakref.ref(request)
+    host.plan_for(Invite).decode(b'{"email": "a@acme"}', context=request)
+    SEEN.clear()
+    del request
+    gc.collect()
+    assert reference() is None
+
+
+def test_threads_decode_through_one_plan_each_with_its_own_context() -> None:
+    plan = host.plan_for(Invite)
+    barrier = threading.Barrier(8)
+    failures: list[str] = []
+
+    def work(index: int) -> None:
+        barrier.wait()
+        request = Request(f"t{index}")
+        for _ in range(200):
+            invite = plan.decode(f'{{"email": "a@t{index}"}}'.encode(), context=request)
+            if invite.email != f"a@t{index}":
+                failures.append(invite.email)
+            with pytest.raises(host.HostProblem):
+                plan.decode(b'{"email": "a@other"}', context=request)
+
+    with ThreadPoolExecutor(8) as pool:
+        for future in [pool.submit(work, index) for index in range(8)]:
+            future.result()
+    assert failures == []
 
 
 # --- a host built for ABI 1.0 keeps working -----------------------------------------------------

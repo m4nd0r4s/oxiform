@@ -5,11 +5,11 @@ use oxiform_core::description::{
     Constraints, Description, FieldDescription, StructDescription, TypeDescription, UnknownFields,
 };
 use oxiform_core::executor::{Failure, execute};
-use oxiform_core::issues::{Issue, Report};
+use oxiform_core::issues::{Issue, PathSegment, Report};
 use oxiform_core::limits::Limits;
 use oxiform_core::options::{Mode, Options};
 use oxiform_core::plan::{ChoiceId, ConversionId, StructId};
-use oxiform_core::sink::Sink;
+use oxiform_core::sink::{Rejection, Sink, Verdict};
 use oxiform_core::temporal::Temporal;
 use oxiform_formats::json::JsonReader;
 
@@ -124,6 +124,50 @@ impl Sink for ValueSink {
             fields.iter_mut().map(Option::take).collect(),
         ))
     }
+    /// A stand-in for Python validators, which only run for what the plan marks `validated`:
+    /// a negative integer is rejected with the code `negative`, 99 becomes 100, and the text
+    /// "bad" is rejected at the path `sub` with the code `invalid`.
+    fn check_field(
+        &mut self,
+        _: StructId,
+        _: usize,
+        value: Value,
+    ) -> Result<Verdict<Value>, Infallible> {
+        Ok(match value {
+            Value::Integer(number) if number < 0 => Verdict::Reject(vec![Rejection {
+                code: Some("negative".into()),
+                message: format!("{number} is negative"),
+                path: Vec::new(),
+            }]),
+            Value::Integer(99) => Verdict::Accept(Value::Integer(100)),
+            Value::String(text) if text == "bad" => Verdict::Reject(vec![Rejection {
+                code: None,
+                message: "bad text".into(),
+                path: vec![PathSegment::Key("sub".into())],
+            }]),
+            other => Verdict::Accept(other),
+        })
+    }
+    /// An instance whose first field is 13 is rejected, with two problems.
+    fn check_model(&mut self, _: StructId, instance: Value) -> Result<Verdict<Value>, Infallible> {
+        if let Value::Instance(_, fields) = &instance
+            && fields.first() == Some(&Some(Value::Integer(13)))
+        {
+            return Ok(Verdict::Reject(vec![
+                Rejection {
+                    code: None,
+                    message: "unlucky".into(),
+                    path: Vec::new(),
+                },
+                Rejection {
+                    code: None,
+                    message: "really unlucky".into(),
+                    path: vec![PathSegment::Key("second".into())],
+                },
+            ]));
+        }
+        Ok(Verdict::Accept(instance))
+    }
 }
 
 pub fn plain(root: TypeDescription) -> Description {
@@ -142,6 +186,7 @@ pub fn field(name: &str, value_type: TypeDescription) -> FieldDescription {
         aliases: Vec::new(),
         value_type,
         has_default: false,
+        validated: false,
     }
 }
 
@@ -152,6 +197,7 @@ pub fn structure(name: &str, fields: Vec<FieldDescription>) -> StructDescription
         unknown_fields: UnknownFields::Ignore,
         tag: name.into(),
         tag_field: None,
+        validated: false,
     }
 }
 

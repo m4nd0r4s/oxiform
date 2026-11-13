@@ -13,7 +13,7 @@ use pyo3::types::{PyBytes, PyString};
 
 use crate::compiled::{CompiledType, compiled_for};
 use crate::errors::report_error;
-use crate::options::{PyLimits, decode_options, max_errors_argument};
+use crate::options::{PyLimits, context_argument, decode_options, max_errors_argument};
 use crate::python_objects::any_type;
 use crate::sink::PythonSink;
 
@@ -22,11 +22,12 @@ use crate::sink::PythonSink;
 /// `unknown` (`"ignore"` or `"forbid"`) overrides, for this call, what every model does with keys
 /// that match no field.
 #[pyfunction]
-#[pyo3(signature = (data, r#type = None, *, mode = "strict", limits = None, max_errors = 100, unknown = None))]
+#[pyo3(signature = (data, r#type = None, *, mode = "strict", context = None, limits = None, max_errors = 100, unknown = None))]
 pub(crate) fn json_decode<'py>(
     data: &Bound<'py, PyAny>,
     r#type: Option<&Bound<'py, PyAny>>,
     mode: &str,
+    context: Option<&Bound<'py, PyAny>>,
     limits: Option<&PyLimits>,
     #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
     unknown: Option<&str>,
@@ -37,7 +38,13 @@ pub(crate) fn json_decode<'py>(
     };
     let compiled = compiled_for(&target)?;
     let options = decode_options(mode, limits, max_errors, unknown)?;
-    decode_with(data, &target, &compiled, &options)
+    decode_with(
+        data,
+        &target,
+        &compiled,
+        &options,
+        context_argument(context),
+    )
 }
 
 /// A reusable JSON decoder for one type: `ox.json.Decoder(User).decode(data)`.
@@ -72,12 +79,18 @@ impl JsonDecoder {
         })
     }
 
-    fn decode<'py>(&self, data: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (data, *, context = None))]
+    fn decode<'py>(
+        &self,
+        data: &Bound<'py, PyAny>,
+        context: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         decode_with(
             data,
             self.target.bind(data.py()),
             &self.compiled,
             &self.options,
+            context_argument(context),
         )
     }
 
@@ -92,10 +105,11 @@ fn decode_with<'py>(
     target: &Bound<'py, PyAny>,
     compiled: &CompiledType,
     options: &Options,
+    context: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let py = data.py();
     let input = read_input(data)?;
-    match decode_bytes(py, &input, compiled, options) {
+    match decode_bytes(py, &input, compiled, options, context) {
         Ok(value) => Ok(value),
         Err(Failure::Invalid(report)) => Err(report_error(py, &report, target, "json")),
         Err(Failure::Sink(error)) => Err(error),
@@ -103,17 +117,20 @@ fn decode_with<'py>(
 }
 
 /// Reads the JSON document in `input` as the type of `compiled`: the core of `decode`, which the
-/// embedding ABI calls with a buffer of its host.
+/// embedding ABI calls with a buffer of its host. `context` is what the validators that ask for
+/// one receive.
 pub(crate) fn decode_bytes<'py>(
     py: Python<'py>,
     input: &[u8],
     compiled: &CompiledType,
     options: &Options,
+    context: Option<Bound<'py, PyAny>>,
 ) -> Result<Bound<'py, PyAny>, Failure<PyErr>> {
     let limits = &options.limits;
     if input.len() > limits.max_bytes {
         let issue = Issue {
             code: ErrorCode::LimitExceeded,
+            user_code: None,
             path: Vec::new(),
             message: format!(
                 "the document exceeds the limit max_bytes={}",
@@ -131,7 +148,7 @@ pub(crate) fn decode_bytes<'py>(
         }
     };
     let mut reader = JsonReader::new(text, limits.max_depth).with_max_str_len(limits.max_str_len);
-    let mut sink = PythonSink::new(py, compiled);
+    let mut sink = PythonSink::new(py, compiled, context);
     execute(&compiled.plan, &mut reader, &mut sink, options)
 }
 
@@ -169,6 +186,7 @@ fn invalid_utf8(input: &[u8], error: std::str::Utf8Error) -> Issue {
         + 1;
     Issue {
         code: ErrorCode::Syntax,
+        user_code: None,
         path: Vec::new(),
         message: format!("invalid UTF-8 at byte {offset} (line {line}, column {column})"),
         input: None,

@@ -100,7 +100,7 @@ fn build_issue(issue: &Issue) -> (OxIssue, Extras) {
         })
         .collect();
     let view = OxIssue {
-        code: text(issue.code.as_str()),
+        code: text(issue.code_text()),
         message: text(&issue.message),
         pointer: text(&pointer),
         input: issue.input.as_deref().map_or(OxStr::EMPTY, text),

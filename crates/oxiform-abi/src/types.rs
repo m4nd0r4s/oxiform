@@ -222,8 +222,12 @@ pub struct OxDecodeOptions {
     pub unknown: u32,
     /// Must be 0 in ABI 1.0; a bit this oxiform does not know is [`OX_UNSUPPORTED`].
     pub flags: u32,
-    /// The validation context (`ox.Context`, OX-11): a borrowed `PyObject*`. Reserved: must be
-    /// null in ABI 1.0, and anything else is [`OX_UNSUPPORTED`], never silently ignored.
+    /// The validation context (`ox.Context`, OX-11): a borrowed `PyObject*` that oxiform hands, as
+    /// it is, to every validator that asks for one, or null for none. **Read since ABI 1.2**: an
+    /// oxiform that exports 1.1 or earlier refuses a context that is not null with
+    /// [`OX_UNSUPPORTED`], and a host built for 1.2 is refused by it at import before it can ask.
+    /// The object is borrowed for the call, and the thread must stay attached to the interpreter
+    /// (it is the same `PyObject*` rules as `target` and `obj`).
     pub context: *mut OxPyObject,
 }
 
@@ -270,12 +274,21 @@ pub struct OxPairsOptions {
     /// [`OX_UNKNOWN_MODEL`], [`OX_UNKNOWN_IGNORE`] or [`OX_UNKNOWN_FORBID`] (OX-9).
     pub unknown: u32,
     pub reserved: u32,
+    /// **ABI 1.2.** The validation context (`ox.Context`, OX-11), as in
+    /// [`OxDecodeOptions::context`]: a borrowed `PyObject*` handed as it is to the validators of
+    /// the model, or null for none. A host built for 1.1 stops at `reserved`, and its
+    /// `struct_size` leaves this null.
+    pub context: *mut OxPyObject,
 }
 
 impl OxPairsOptions {
     /// The size of this struct in ABI 1.1: the least `struct_size` `decode_pairs` accepts.
     pub const SIZE_V1_1: usize =
         core::mem::offset_of!(OxPairsOptions, reserved) + core::mem::size_of::<u32>();
+
+    /// The size of this struct in ABI 1.2, with `context`.
+    pub const SIZE_V1_2: usize =
+        core::mem::offset_of!(OxPairsOptions, context) + core::mem::size_of::<*mut OxPyObject>();
 
     /// Case-sensitive names, default limits, `max_errors` 100, models decide on unknown names.
     pub const fn new() -> Self {
@@ -286,6 +299,7 @@ impl OxPairsOptions {
             limits: core::ptr::null(),
             unknown: OX_UNKNOWN_MODEL,
             reserved: 0,
+            context: core::ptr::null_mut(),
         }
     }
 }

@@ -7,9 +7,22 @@ use oxiform_core::issues::{
     ContextValue as Context, ErrorCode, Issue, PathSegment, Report as CoreReport, ReportKind,
 };
 
+/// The engine options of a decode call, without the context.
+///
+/// # Safety
+///
+/// As `decode_params`.
+unsafe fn decode_options(
+    pointer: *const OxDecodeOptions,
+) -> Result<oxiform_core::options::Options, Error> {
+    // SAFETY: forwarded from the caller.
+    unsafe { decode_params(pointer) }.map(|params| params.options)
+}
+
 fn issue(code: ErrorCode, path: Vec<PathSegment>, message: &str) -> Issue {
     Issue {
         code,
+        user_code: None,
         path,
         message: message.to_owned(),
         input: None,
@@ -515,11 +528,6 @@ fn decode_options_refuse_what_they_cannot_honour_and_say_what_to_do() {
         (error.status, error.message.contains("upgrade oxiform")),
         (OX_UNSUPPORTED, true)
     );
-    let error = refused(&|raw| raw.context = core::ptr::without_provenance_mut(8));
-    assert_eq!(
-        (error.status, error.message.contains("pass NULL")),
-        (OX_UNSUPPORTED, true)
-    );
     let error = refused(&|raw| raw.struct_size = 8);
     assert_eq!(
         (error.status, error.message.contains("struct_size")),
@@ -766,6 +774,40 @@ fn a_bad_buffer_is_checked_before_any_work() {
     assert!(unsafe { check_buffer(core::ptr::null_mut()) }.is_err());
 }
 
+#[test]
+fn the_context_is_passed_through_untouched_and_null_is_none() {
+    // The pointer is never dereferenced by this crate: any address stands for a `PyObject*`.
+    let address: *mut OxPyObject = core::ptr::without_provenance_mut(0x1000);
+    let mut raw = OxDecodeOptions::new();
+    raw.context = address;
+    // SAFETY: a valid struct that lives through the call.
+    let params = unsafe { decode_params(&raw const raw) }.unwrap();
+    assert_eq!(params.context, address);
+    let empty = OxDecodeOptions::new();
+    assert!(
+        unsafe { decode_params(&raw const empty) }
+            .unwrap()
+            .context
+            .is_null()
+    );
+    assert!(
+        unsafe { decode_params(core::ptr::null()) }
+            .unwrap()
+            .context
+            .is_null()
+    );
+}
+
+#[test]
+fn a_context_of_a_struct_shorter_than_its_field_is_not_read() {
+    // A host built for ABI 1.0 had `context` already (it was reserved), so every accepted size
+    // holds it: the shortest size is the one that ends right after it.
+    assert_eq!(
+        OxDecodeOptions::SIZE_V1_0,
+        core::mem::offset_of!(OxDecodeOptions, context) + size_of::<*mut OxPyObject>()
+    );
+}
+
 // --- decode_pairs (ABI 1.1) ---------------------------------------------------------------
 
 #[test]
@@ -803,6 +845,23 @@ fn pairs_options_cover_every_field() {
         oxiform_core::limits::Limits::DEFAULT.max_bytes,
         "0 in a field is its default"
     );
+}
+
+#[test]
+fn pairs_options_carry_the_context_since_abi_1_2_and_a_1_1_struct_has_none() {
+    let address: *mut OxPyObject = core::ptr::without_provenance_mut(0x2000);
+    let mut raw = OxPairsOptions::new();
+    raw.context = address;
+    // SAFETY: a valid struct that lives through the call.
+    let params = unsafe { pairs_options(&raw const raw) }.unwrap();
+    assert_eq!(params.context, address);
+    // A host built for ABI 1.1 passes the struct as it ended then: the field is not read, and
+    // whatever bytes follow in its memory do not become a context.
+    raw.struct_size = OxPairsOptions::SIZE_V1_1 as u32;
+    // SAFETY: the same valid struct; only `struct_size` bytes are read.
+    let params = unsafe { pairs_options(&raw const raw) }.unwrap();
+    assert!(params.context.is_null());
+    assert_eq!(OxPairsOptions::SIZE_V1_2, size_of::<OxPairsOptions>());
 }
 
 #[test]

@@ -49,11 +49,30 @@ pub(crate) enum MemberSource {
     Flatten(Layout),
 }
 
-/// How to create instances of one structure.
+/// A function of `@ox.validator`: what to call, and with what.
+pub(crate) struct Validator {
+    /// The qualified name of the function, for messages.
+    pub(crate) name: String,
+    pub(crate) function: Py<PyAny>,
+    /// The class a field validator receives.
+    pub(crate) cls: Py<PyAny>,
+    /// The keyword that receives the validation context, when the function takes it.
+    pub(crate) context: Option<Py<PyString>>,
+    /// Whether the function cannot run without a context.
+    pub(crate) context_required: bool,
+    /// Whether the function is given `None` as the context when the decode has none.
+    pub(crate) context_none_when_absent: bool,
+}
+
+/// How to create instances of one structure, and what checks them.
 pub(crate) struct StructRuntime {
     pub(crate) layout: Layout,
     /// The default of each field read, in field order.
     pub(crate) defaults: Vec<FieldDefault>,
+    /// The validators of each field read, in field order, each list in the order they run.
+    pub(crate) field_validators: Vec<Vec<Validator>>,
+    /// The validators of the whole model, in the order they run.
+    pub(crate) model_validators: Vec<Validator>,
 }
 
 /// What the sink needs besides the plan: how to create instances of each structure, the
@@ -139,18 +158,23 @@ fn read_choice_value(value: &Bound<'_, PyAny>) -> PyResult<ChoiceValue> {
 fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, StructRuntime)> {
     let mut fields = Vec::new();
     let mut defaults = Vec::new();
+    let mut field_validators = Vec::new();
     for field in description.getattr("fields")?.try_iter()? {
         let field = field?;
         let default = read_default(&field.getattr("default")?)?;
+        let validators = read_validators(&field.getattr("validators")?)?;
         fields.push(FieldDescription {
             name: field.getattr("name")?.extract()?,
             wire_name: field.getattr("wire_name")?.extract()?,
             aliases: field.getattr("aliases")?.extract()?,
             value_type: read_type(&field.getattr("value_type")?)?,
             has_default: !matches!(default, FieldDefault::Required),
+            validated: !validators.is_empty(),
         });
         defaults.push(default);
+        field_validators.push(validators);
     }
+    let model_validators = read_validators(&description.getattr("validators")?)?;
     let unknown_fields = match description
         .getattr("unknown_fields")?
         .extract::<String>()?
@@ -165,12 +189,39 @@ fn read_struct(description: &Bound<'_, PyAny>) -> PyResult<(StructDescription, S
         unknown_fields,
         tag: description.getattr("tag")?.extract()?,
         tag_field: description.getattr("tag_field")?.extract()?,
+        validated: !model_validators.is_empty(),
     };
     let runtime = StructRuntime {
         layout: read_layout(&description.getattr("layout")?)?,
         defaults,
+        field_validators,
+        model_validators,
     };
     Ok((struct_description, runtime))
+}
+
+fn read_validators(validators: &Bound<'_, PyAny>) -> PyResult<Vec<Validator>> {
+    validators
+        .try_iter()?
+        .map(|validator| {
+            let validator = validator?;
+            let context = validator.getattr("context")?;
+            Ok(Validator {
+                name: validator.getattr("name")?.extract()?,
+                function: validator.getattr("function")?.unbind(),
+                cls: validator.getattr("cls")?.unbind(),
+                context: if context.is_none() {
+                    None
+                } else {
+                    Some(context.cast_into::<PyString>()?.unbind())
+                },
+                context_required: validator.getattr("context_required")?.extract()?,
+                context_none_when_absent: validator
+                    .getattr("context_none_when_absent")?
+                    .extract()?,
+            })
+        })
+        .collect()
 }
 
 fn read_layout(layout: &Bound<'_, PyAny>) -> PyResult<Layout> {

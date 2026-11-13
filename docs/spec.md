@@ -6,7 +6,7 @@
 
 ## 1. Decisions made
 
-D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. D23 is the outcome of gate G1 at the end of phase 0. D24 and D25 come from the config slice (porto-309.14). The rest of the spec already applies them.
+D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. D23 is the outcome of gate G1 at the end of phase 0. D24 and D25 come from the config slice (porto-309.14), D26 from the validation context (porto-309.15). The rest of the spec already applies them.
 
 | # | Decision | Choice | Why |
 | --- | --- | --- | --- |
@@ -35,6 +35,7 @@ D1–D13 close the 7 open questions from the review and 6 defaults that were imp
 | D23 | Value proposition (gate G1) | Multi-format, validation and config, with JSON speed close to msgspec (at most 2×) and well ahead of pydantic (at least 2×), instead of "the fastest" | The phase 0 prototype decodes at 1.2–1.8× the time of msgspec and 2–4× faster than pydantic v2. Closing the rest needs a native model layout and a SIMD structural reader, which would delay every other feature; that work continues alongside the next phases |
 | D24 | Names of the config API | `@ox.config` is the decorator and `oxiform.cfg` (`from oxiform import cfg`) is the namespace of `load`, the sources and `origin` | A module cannot be a typed dataclass transform, so `ox.config` has to be a function, and the same name cannot also be the module of the sources |
 | D25 | `ox.Secret` and encoding | Encode always writes `"********"` for a secret, in every format, with no switch; the value leaves only through `.reveal()` | A secret that can be written by a flag is one typo from a log line. `ox.Policy(secrets="reveal")` joins when `ox.Policy` does |
+| D26 | `@ox.validator`: where it runs and what it gets | After the type and constraints of its field only (no `mode="before"` in 1.0), in declaration order once the whole map is read; model validators after the instance exists. The context is any object, passed through as is and typed with `ox.Context[T]`; a missing context is a `TypeError` for the host and never a validation problem | The engine reads the input once, straight into the final types (D15), so there is no raw Python value for a "before" validator until `ox.convert` exists. Running in declaration order makes effects independent of key order, and a context that is passed as is costs nothing and lets Douro hand over its own request type |
 
 ## 2. Scope
 
@@ -254,9 +255,9 @@ ox.verify(DateRange)(ThirdPartyBooking)     # also on types that are not yours
 - A lambda that does not compile runs in Python and shows up as slow path in `ox.explain`; with `strict_rules=True` it is a declaration error.
 - The order between `@ox.model` and `@ox.verify` does not matter.
 
-### 4.3 Logic in Python: `@ox.validator`
+### 4.3 Logic in Python: `@ox.validator` and `ox.Context`
 
-For what cannot be declared. Always runs in Python (D18).
+For what cannot be declared. Always runs in Python (D18). A validator is a function in the class body, marked with `@ox.validator`:
 
 ```python
 @ox.model
@@ -265,47 +266,72 @@ class Signup:
     password: str
     password2: str
 
-    @ox.validator("username")                   # one field, after the constraints
+    @ox.validator("username")                   # one field, after its type and constraints
     def not_reserved(cls, v: str) -> str:
         if v in RESERVED:
             raise ox.Invalid("reserved name", code="reserved")
         return v
 
-    @ox.validator("username", mode="before")    # raw value, before the type
-    def lower(cls, v):
-        return v.lower() if isinstance(v, str) else v
+    @ox.validator("username")                   # external data, through the context
+    def same_tenant(cls, v: str, ctx: ox.Context[TenantContext]) -> str:
+        if v.endswith("@" + ctx["tenant"]):
+            return v
+        raise ox.Invalid("not in your tenant")
 
-    @ox.validator                               # whole model, after everything
+    @ox.validator                               # the whole model, after everything
     def passwords_match(self) -> None:
         if self.password != self.password2:
             raise ox.Invalid("passwords do not match", path="password2")
 
-    @ox.validator("username")
-    def same_tenant(cls, v, ctx: ox.Context):   # external data via context=
-        ...
-
 ox.json.decode(raw, Signup, context={"tenant": tenant})
 ```
 
-- Field validators are classmethods (they receive `cls`) and return the value, possibly changed. Model validators receive `self` and return `None`.
-- The context arrives in the parameter annotated with `ox.Context`.
-- `ox.Invalid`, `ValueError` and `TypeError` become validation errors at the field path. Any other exception propagates as is.
-- `strict_rules=True` forbids `@ox.validator` (D16).
+**Shapes.**
+
+- `@ox.validator("a", "b")` is a *field validator* of those fields (each name is the Python name of a field of that class that the input gives; a name that is not one, or a field that is skipped on read, is an `ox.SchemaError`, with a suggestion for a typo). It is called `f(cls, value)` and **returns the value**, possibly replaced: the replacement is not read again, so it must already be a valid value of the field's type. A field validator that returns `None` for a field whose type does not accept `None` is a bug (a forgotten `return`), and is an `ox.SchemaError` at that decode, not a silent `None`. `cls` is the class being decoded (the subclass, for an inherited validator; the flattened class, for a field of a flattened model).
+- Bare `@ox.validator` is a *model validator*, called `f(self)` on the finished instance and returning `None` (anything else is an `ox.SchemaError`). It runs on a frozen model too: it reads, it does not assign.
+- A plain function and a `classmethod` object are both accepted for a field validator (`@ox.validator("x")` above or below `@classmethod`). `staticmethod`, `async def`, a generator and a lambda are `ox.SchemaError`s. `@ox.validator()` with no field and parentheses is an error too: write the names, or drop the parentheses for a model validator.
+- `mode="after"` is the only mode in 1.0 (D26). `mode="before"` is an `ox.SchemaError` that says so: a "before" validator needs the raw value as a Python object, but a decode reads the input once, straight into the final types (D15); it arrives together with `ox.convert` (reading Python objects), which gives it a place to run.
+
+**The context.** `context=` is an argument of every decode (`ox.json.decode`, `ox.json.Decoder.decode`, `ox.urlencoded.decode`, `ox.pairs.decode`, `cfg.load`, and the `context` of `OxDecodeOptions` and `OxPairsOptions` in the C ABI, section 9.5). It is **any object**: oxiform does not copy, wrap or inspect it, so Douro's `{"request": request}` arrives as the same dict and a host's own class arrives as that class. A validator receives it in the parameter annotated `ox.Context`:
+
+- `ox.Context[T]` is `T` to a type checker (`ox.Context` alone is `Mapping[str, Any]`), so `ctx: ox.Context[TenantContext]` with a `TypedDict` is checked by pyright strict. At run time it is `Annotated[T, <marker>]`, and the marker is how oxiform finds the parameter, by annotation and never by name; a string annotation (`from __future__ import annotations`) is read the same way.
+- The parameter is passed by keyword, so it may sit anywhere after the value. It is **required unless it has a default or its annotation is `ox.Context[T] | None`**: when the decode has no context, a validator that requires one fails with a `TypeError` that names the validator and says to pass `context=...` to the decode call, a validator whose parameter has a default is called without it (and uses its default), and one annotated `ox.Context[T] | None` with no default is given `None`. That error is raised when the validator would run, not before the decode, so a decode whose input is rejected earlier, or does not reach the field, never needs the context. It is never a validation error: a missing context is the host's mistake, not the client's.
+- The context is **read-only by contract** (`Mapping` says so to the checker; nothing stops a validator that mutates a dict, and oxiform does not guard it). It is borrowed for the call and shared by every validator of that decode, on whatever thread decodes: on a free-threaded build the host owns its thread safety, as for any object it shares between threads.
+- **Encode and the schema.** `encode` never runs validators (section 4.6: it only validates with `validate=True`, which is `ox.validate`), and a validator never changes what the JSON Schema says (section 8.5): it is code, and a schema describes the input a client may send. A model that has validators says what they check in its `description`, not in the schema.
+
+**Errors.**
+
+- `ox.Invalid(message, *, code="invalid", path=None)` becomes one problem with that `code` (the code `invalid` when none is given, section 11.2), `message`, and no `input` (the value is a Python object by then, not text, and an arbitrary `repr` is both slow and a leak). It subclasses `ValueError`. `path` is one segment (`"password2"`, `0`) or a sequence of them, relative to the value being validated; a first segment that is the Python name of a field of the model is written as its wire name (D19), the rest as given. `ValueError` and `TypeError` raised in a validator become the same problem with the code `invalid` and `str(error)` as message (a `ValueError` that carries no message, `ValueError()`, says `invalid value`). **Any other exception propagates unchanged** (a `KeyError` for a missing key of the context is a bug in the validator, and a `ZeroDivisionError` is not "invalid input"); so does the `TypeError` for a missing context, which oxiform raises itself, outside the validator's `try`.
+- Where the problem is: a field validator's problem is at the field (`/username`, with `path` relative to it); a model validator's at the model (the empty pointer at the root, `/billing` for a nested model, with `path` relative to it, `path="password2"` giving `/billing/password2`). Every validator that runs reports on its own, so one decode reports a field problem from a validator next to the type and constraint problems of the other fields, the model problems of the nested models and every problem of every list item (`/items/3/sku`), all in one `ValidationError` bounded by `max_errors`, in the order the problems were found. `max_errors=1` stops at the first one, validator or not.
+- **Secrets.** A validator on a `Secret[T]` field receives the `ox.Secret` and calls `.reveal()` itself. The problem of a validator never quotes the value (there is no `input`), and when the value validated is a `Secret`, or the model validated holds one anywhere inside (a field, a nested model, a list of them), the message of a `ValueError` or `TypeError` that is not an `ox.Invalid` is replaced by `the validator rejected the value (the message is withheld: the model holds an ox.Secret)`: `int("hunter2")` raises `invalid literal for int() with base 10: 'hunter2'`, which is exactly the leak the `Secret` exists to prevent. An `ox.Invalid` message is written by the author of the validator for the client and is kept.
+- Declarations are checked once, when the plan is compiled: a validator that cannot be called with the arguments above (`def f(cls)` for a field, `def f(self, a, b)`), a context parameter that is positional-only, a name that is not a field.
+
+**Execution.**
+
+- A field validator runs for each field the input **gave**, whose own type and constraints passed, after the whole map has been read, in the **declaration order of the fields and then of the validators** (so the order of the keys in the document changes the order of the key problems, never the order in which validators run and have effects). A field that was missing and took its default is **not** validated: defaults are validated once, when the plan is compiled, and a validator may need a context that does not exist then. A model validator runs once per instance, only if every field is valid.
+- A validator may therefore also run for a union variant that is then rejected (a variant is tried, and its problems dropped when another fits). A validator is written to be free of effects, or to have only effects that are harmless to repeat.
+- **Multiple validators and inheritance.** A field takes its validators in the order they are defined in the class body; a base class's come before its subclass's; a validator that a subclass redefines under the same name replaces the base's, taking the subclass's place in the order, and a subclass that redefines the name with a plain method removes it. The validators of one field run as a chain, each on the value the previous one returned; one that rejects the value ends the chain, since there is no value to give the next. Problems of different fields never stop each other.
+- **Cost.** A type with no validators pays nothing: the plan has one flag per structure, and a structure without validators does not look at it twice. Section 9.2 lists the validators as slow-path rules.
+- **Modes.** A validator sees the value after the mode's coercion (`"42"` has become `42` in lax mode), so it is the same function in strict and lax. Nothing else changes between modes.
+- **Config.** `@ox.config` classes accept validators, field and model, and the same context: `cfg.load(Settings, sources, context=...)`. A problem from a validator is located like any other: at the value's origin when it has one (`config/base.toml:12 (db.pool_size)`), and at the section when it is a model validator.
+- **Flattened models and `strict_rules`.** A flattened model's field validators run on its fields (with the flattened class as `cls`); a *model* validator on a flattened model cannot, because the flattened instance is built from the fields of the outer one, and is an `ox.SchemaError` that says to put it on the outer model. `strict_rules=True` forbids `@ox.validator` (D16).
 
 ### 4.4 Execution order
 
 For each model:
 
-1. `mode="before"` validators, with the raw value.
-2. Type and coercion (section 4.5).
-3. Transformations, in the declared order.
-4. Field constraints.
-5. `mode="after"` field validators.
-6. Defaults for missing fields (`missing` error if there is none), instance creation and `__post_init__`.
+1. Type and coercion (section 4.5).
+2. Transformations, in the declared order.
+3. Field constraints.
+4. Defaults for missing fields (`missing` error if there is none).
+5. `mode="after"` field validators (section 4.3), of the fields the input gave, in declaration order.
+6. Instance creation and `__post_init__`.
 7. `@ox.verify` rules, in the declared order.
 8. Model validators.
 
-- If any field failed, the instance is not created: step 7 runs only the rules whose fields passed, step 8 does not run, and the result is `ValidationError`.
+- `mode="before"` validators (the raw value, before step 1) are not built: section 4.3 says why.
+- If any field failed, the instance is not created: step 7 runs only the rules whose fields passed, step 8 does not run, and the result is `ValidationError`. The field validators of the fields that passed still ran, so one report has every problem.
 - Nested models complete before the model that contains them.
 - In inheritance, rules and validators of the base run before those of the subclass.
 
@@ -1062,9 +1088,9 @@ A native Python extension in another cdylib (Douro's `douro._native`) validates 
 | --- | --- |
 | `decode_pairs(plan, format, data, len, pairs, pair_count, options, &value, &report)` | OX-3 (section 5.6): reads a source of pairs as the model of `plan`, always in lax mode. `OX_FORMAT_URLENCODED` (2) reads the query string or form body `data[..len]` and wants `pairs` null and `pair_count` 0; `OX_FORMAT_PAIRS` (3) reads `pair_count` `OxPair { name: OxStr, value: OxStr }` (headers, cookies; UTF-8, not percent-decoded) and wants `data` null and `len` 0. Anything else in the unused arguments is `OX_INVALID_ARGUMENT`, another format `OX_UNSUPPORTED`, and a plan that is not a model `OX_INVALID_ARGUMENT`. The results, ownership, statuses and the `format` of a `syntax` issue (`"urlencoded"`, `"pairs"`) are those of `decode`; issues are ready for `report_in_source` |
 
-`OxPairsOptions` is size-prefixed like `OxDecodeOptions` (its first size is the one of ABI 1.1, and a `struct_size` below it is `OX_INVALID_ARGUMENT`): `struct_size`, `flags` (`OX_PAIRS_CASE_INSENSITIVE`; another bit is `OX_UNSUPPORTED`), `max_errors` and `limits` (as in `OxDecodeOptions`; `max_bytes` bounds the whole source, `max_items` the pairs and the distinct names, `max_str_len` each decoded name and value), `unknown` and `reserved`. There is no `mode` and no `context`: pairs are always lax. `OxPair` is frozen within a major, like `OxStr`.
+`OxPairsOptions` is size-prefixed like `OxDecodeOptions` (its first size is the one of ABI 1.1, and a `struct_size` below it is `OX_INVALID_ARGUMENT`): `struct_size`, `flags` (`OX_PAIRS_CASE_INSENSITIVE`; another bit is `OX_UNSUPPORTED`), `max_errors` and `limits` (as in `OxDecodeOptions`; `max_bytes` bounds the whole source, `max_items` the pairs and the distinct names, `max_str_len` each decoded name and value), `unknown`, `reserved` and, since ABI 1.2, `context` (the validation context of section 4.3, as in `OxDecodeOptions`; a host built for 1.1 stops at `reserved`, and its `struct_size` leaves `context` null). There is no `mode`: pairs are always lax. `OxPair` is frozen within a major, like `OxStr`.
 
-**Options.** `OxDecodeOptions` is size-prefixed: `struct_size`, `mode` (`OX_MODE_STRICT`, `OX_MODE_LAX`), `max_errors` (0 is 100, 1 is "stop at the first"), a pointer to `OxLimits` (null is the defaults; in an `OxLimits` a host fills in, **0 in a size field is the default of that field**, as `max_errors` 0 is, so `{ .struct_size = sizeof l, .max_bytes = N }` changes one limit and keeps the rest; `u64::MAX`, or starting from `limits_none`, removes a limit, and a limit of 0 itself cannot be written, 1 being the smallest; `max_depth` stays at most 128), `unknown` (`OX_UNKNOWN_MODEL`, `_IGNORE`, `_FORBID`: the per-call override of the `unknown=` option of every model, OX-9), `flags` (none are defined yet: a bit that is set is refused) and `context` (the validation context of OX-11: a borrowed `PyObject*`, reserved, and refused unless null so that it is never silently ignored). `OxEncodeOptions` has `flags` (`OX_ENCODE_SORT_KEYS`, `OX_ENCODE_INDENT`) and `indent`. Every struct a host fills is size-prefixed, which means:
+**Options.** `OxDecodeOptions` is size-prefixed: `struct_size`, `mode` (`OX_MODE_STRICT`, `OX_MODE_LAX`), `max_errors` (0 is 100, 1 is "stop at the first"), a pointer to `OxLimits` (null is the defaults; in an `OxLimits` a host fills in, **0 in a size field is the default of that field**, as `max_errors` 0 is, so `{ .struct_size = sizeof l, .max_bytes = N }` changes one limit and keeps the rest; `u64::MAX`, or starting from `limits_none`, removes a limit, and a limit of 0 itself cannot be written, 1 being the smallest; `max_depth` stays at most 128), `unknown` (`OX_UNKNOWN_MODEL`, `_IGNORE`, `_FORBID`: the per-call override of the `unknown=` option of every model, OX-9), `flags` (none are defined yet: a bit that is set is refused) and `context` (the validation context of OX-11, section 4.3: a borrowed `PyObject*`, or null for none. **Since ABI 1.2** oxiform hands it, as it is, to every validator that asks for one; an oxiform older than 1.2 refuses a context that is not null with `OX_UNSUPPORTED` so that it is never silently ignored, and a host built for 1.2 is refused at import by such an oxiform before it can ask). The object is borrowed for the call: oxiform takes no reference that outlives it, and never calls anything on it but what the validators of the model do. `OxEncodeOptions` has `flags` (`OX_ENCODE_SORT_KEYS`, `OX_ENCODE_INDENT`) and `indent`. Every struct a host fills is size-prefixed, which means:
 
 - the host sets `struct_size` to the `size_of` of the struct it was built against and starts from the `new()` constructor;
 - oxiform copies only `struct_size` bytes over the defaults of its own, so a host built for an earlier minor leaves the new fields at their defaults, and a host built for a later minor than the installed oxiform has its extra bytes ignored (it is refused at import before that, see below);
@@ -1080,7 +1106,7 @@ A native Python extension in another cdylib (Douro's `douro._native`) validates 
 - The table starts with `abi_major`, `abi_minor` and `struct_size`, so a host reads the version before it knows how long the table is.
 - A **major** bump is any incompatible change: a field removed, moved or reinterpreted, a function that behaves differently. oxiform then exports a new capsule (`_ABI_V2`) and keeps the previous one for at least two minor releases. A host built for major N looks for `_ABI_V<N>` in `_ABI_MAJORS` and refuses another major at import with an `ImportError` that says which majors are installed and what to do (install an oxiform release that exports N, or rebuild the host against the installed release).
 - A **minor** bump is additive: a function at the end of the table, a field at the end of a size-prefixed struct, a constant. A host built for minor M needs an oxiform that exports at least M, and checks `abi_minor >= M` and `struct_size >= size_of::<OxiformApi>()` at import (`ImportError`: "needs oxiform ABI 1.2 or newer ... upgrade oxiform"); a newer oxiform serves an older host unchanged, because the host reads only the prefix it knows.
-- **OX-3 (pair-source decoding)** was the first minor addition (**1.1**), as designed: `decode_pairs` at the end of the table, with its own size-prefixed options, and `OX_FORMAT_*` values for sources that are not documents. `API_SIZE_V1_0` is the size of the 1.0 table (everything up to `report_free`), which is a prefix of the 1.1 one, field for field (a test compares every offset); `table_from_pointer` and `import()` of a host built for 1.1 refuse a 1.0 oxiform at import with the clear message (`needs oxiform ABI 1.1 or newer ... upgrade oxiform`), while a host built for 1.0 reads only the first `API_SIZE_V1_0` bytes of the table of a 1.1 oxiform and keeps working (`tests/test_abi_host.py` runs one: `examples/abi-host/src/legacy.rs` is the 1.0 table as released, used through the live capsule). OX-11 fills `context` and adds the functions that build it; OX-6 and OX-8 add fields and functions in the same way.
+- **OX-3 (pair-source decoding)** was the first minor addition (**1.1**), as designed: `decode_pairs` at the end of the table, with its own size-prefixed options, and `OX_FORMAT_*` values for sources that are not documents. `API_SIZE_V1_0` is the size of the 1.0 table (everything up to `report_free`), which is a prefix of the 1.1 one, field for field (a test compares every offset); `table_from_pointer` and `import()` of a host built for 1.1 refuse a 1.0 oxiform at import with the clear message (`needs oxiform ABI 1.1 or newer ... upgrade oxiform`), while a host built for 1.0 reads only the first `API_SIZE_V1_0` bytes of the table of a 1.1 oxiform and keeps working (`tests/test_abi_host.py` runs one: `examples/abi-host/src/legacy.rs` is the 1.0 table as released, used through the live capsule). **OX-11 (the validation context)** was the second (**1.2**): no new function and a table of the same size as 1.1 (a host does not need oxiform to *build* a context, since it already has the interpreter and makes the object it wants), but two fields that now mean something: `OxDecodeOptions::context`, reserved since 1.0, is read, and `OxPairsOptions` gets a `context` appended at its end (`OxPairsOptions::SIZE_V1_2`; `SIZE_V1_1` is still the least `struct_size` it accepts). `abi_minor` is 2, so a host built for 1.2 is refused by an oxiform that exports 1.1 or earlier, which would otherwise refuse its context call by call; a host built for 1.0 or 1.1 keeps working unchanged and never sets a context. OX-6 and OX-8 add fields and functions in the same way.
 - The package version of oxiform and the ABI version are independent; the ABI version is in the changelog of each release.
 
 **Ownership and lifetimes.** Every pointer has one owner at any time:
@@ -1093,7 +1119,8 @@ A native Python extension in another cdylib (Douro's `douro._native`) validates 
 | An `OxReport` and its views | oxiform | The host: `report_free`, or a successful `report_combine` | Until freed; `report_in_source` invalidates the views |
 | Output bytes | The host (`OxBuffer`) | The host | oxiform appends at `data + len` and never frees, reallocates or keeps `data`. To grow it calls the host's `reserve` callback, so memory is always allocated and freed by one allocator, never across two cdylibs |
 | `PyObject*` arguments (`target`, `obj`, `context`) | The host | The host | Borrowed for the call |
-| Static strings (`status_message`, `oxiform_version`, issue codes) | oxiform | Nobody | Forever |
+| Static strings (`status_message`, `oxiform_version`, the codes oxiform defines) | oxiform | Nobody | Forever |
+| The `code` of an issue a validator raised (`ox.Invalid(code=...)`) | oxiform, in the report | The host, with the report | Until `report_free`, like the `message`: **do not keep the pointer of an issue's `code` past the report** |
 
 The output buffer is appended to in one step, after the document is built, so a failed call (`EncodeError`, a failing `reserve`) leaves `len` as it was. A `reserve` callback must leave `len` as it was, set `capacity` to at least the size asked for and `data` to a block of that capacity; a buffer without `reserve` is fixed, and what does not fit is `OX_BUFFER` with the size needed in the message. A host written in Rust uses `VecBuffer`.
 
@@ -1178,9 +1205,9 @@ ox.now_utc, ox.uuid4, ox.uuid7     # factories that run in Rust (section 9.2)
 ox.on(field, *constraints)
 ox.rule(fn, *, path=None, message=None, code="rule")
 ox.RuleSet(*regras, name=None)
-@ox.validator(*campos, mode="after" | "before")
+@ox.validator(*fields, mode="after")   # no fields: a model validator; "before" is not built (D26)
 ox.Invalid(message, *, code="invalid", path=None)
-ox.Context                         # read-only mapping, received by validators
+ox.Context[T]                      # the type of the context parameter of a validator; T defaults to Mapping[str, Any]
 ox.validate(obj, *, context=None) -> None
 ox.convert(obj, type, *, mode="lax", from_attributes=False, context=None, limits=None) -> T
 ox.to_builtins(obj, *, include=None, exclude=None, policy=None) -> Any
@@ -1349,6 +1376,7 @@ The gate (≤ 1.1×) is not met. Following this section's rule, the value propos
 - [x] Pair sources (OX-3, section 5.6): `ox.urlencoded.decode` and `ox.pairs.decode`, lax mode with percent-decoding, repeated names as sequences, case-insensitive header names and per-call `unknown=`, and `decode_pairs` through the embedding ABI as a minor addition (ABI 1.1; a host built for 1.0 keeps working)
 - [x] JSON Schema bundle (OX-5, section 8.5): `ox.json_schema` and `ox.json_schema_bundle` write JSON Schema 2020-12 for every type of section 3.5 that oxiform reads today, with shared definitions, a `ref_template`, names that never collide and validation, lax validation and serialization variants; `examples/openapi_components.py`
 - [x] Config slice (section 6, porto-309.14, D24 and D25): `@ox.config` with `env_prefix` and `env_nested`, layered sources (`cfg.file` TOML and JSON, `cfg.pyproject`, `cfg.dotenv`, `cfg.env`, `cfg.mapping`) decoded in lax mode, `cfg.origin` and `cfg.origins`, `cfg.dump`, errors that name the source and key as combined reports, and `ox.Secret[T]` (masked in `repr`, errors, encode and the schema, `.reveal()` as the only way out); `examples/server_config.py`
+- [x] Validation context and Python validators (OX-11, section 4.3, D26, porto-309.15): `@ox.validator` (field validators `mode="after"` and model validators), `ox.Invalid`, `ox.Context[T]` and a `context=` on every decode (`ox.json.decode`, `Decoder.decode`, `ox.urlencoded.decode`, `ox.pairs.decode`, `cfg.load`) and in the C ABI (**1.2**: `OxDecodeOptions::context` read and `OxPairsOptions::context` appended). Not built: `mode="before"`, `strict_rules`, `ox.explain` of validators
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
 - [x] Create the repository with the structure from section 12.2
 - [x] Phase 0 prototype (section 12.2)

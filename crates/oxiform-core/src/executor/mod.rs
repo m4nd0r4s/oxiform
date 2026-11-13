@@ -232,6 +232,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let path = Vec::new();
         self.issues.push(Issue {
             code,
+            user_code: None,
             path,
             message,
             input: if self.secret_depth > 0 { None } else { input },
@@ -305,6 +306,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let path = Vec::new();
         self.issues.push(Issue {
             code: ErrorCode::LimitExceeded,
+            user_code: None,
             path,
             message,
             input: None,
@@ -348,6 +350,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let path = Vec::new();
         self.issues.push(Issue {
             code,
+            user_code: None,
             path,
             message,
             input: None,

@@ -31,11 +31,14 @@ def load(
     *,
     max_errors: int = 100,
     limits: Limits | None = None,
+    context: object | None = None,
 ) -> _T:
     """Reads ``sources`` (the last one wins; ``None`` is the environment alone) and returns
     the validated config. Raises ``ox.DecodeError`` when a source cannot be read and
-    ``ox.ValidationError`` when the values do not fit; both say which source and key."""
-    outcome = _prepare(cls, sources, max_errors, limits)
+    ``ox.ValidationError`` when the values do not fit; both say which source and key.
+    ``context`` is what the ``@ox.validator`` functions of the config that ask for an
+    ``ox.Context`` receive."""
+    outcome = _prepare(cls, sources, max_errors, limits, context)
     # Raised here, and not where it was made: the frames that held the document, the merged
     # tree and every layer are gone by now, so a traceback capture (Sentry, rich, pytest
     # --showlocals) does not find the values of the sources in them.
@@ -55,7 +58,11 @@ class _Outcome:
 
 
 def _prepare(
-    cls: type, sources: Sequence[Source] | None, max_errors: int, limits: Limits | None
+    cls: type,
+    sources: Sequence[Source] | None,
+    max_errors: int,
+    limits: Limits | None,
+    validation_context: object | None,
 ) -> _Outcome:
     options = config_options(cls)
     if options is None:
@@ -92,7 +99,15 @@ def _prepare(
     settings: object = None
     try:
         settings = cast(
-            "object", json_decode(document, cls, mode="lax", max_errors=max_errors, limits=limits)
+            "object",
+            json_decode(
+                document,
+                cls,
+                mode="lax",
+                context=validation_context,
+                max_errors=max_errors,
+                limits=limits,
+            ),
         )
     except ValidationError as error:
         failure = error.with_traceback(None)

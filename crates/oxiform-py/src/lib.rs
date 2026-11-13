@@ -11,6 +11,7 @@ mod pairs;
 mod python_objects;
 mod sink;
 mod slots;
+mod validate;
 
 use pyo3::prelude::*;
 
