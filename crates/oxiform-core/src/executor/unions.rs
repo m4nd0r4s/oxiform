@@ -44,7 +44,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         let (string, lax) = match (union.string, lax) {
             (None, Some(lax)) => return self.read_lax(lax, event),
             (None, None) => return self.mismatch(&union.name, event),
-            (Some(string), None) => return self.value(string, event),
+            (Some(string), None) => return self.text_variant_only(union, string, event),
             (Some(_), Some(LaxVariant::Null(null))) => return self.value(null, Event::Null),
             (Some(string), Some(lax)) => (string, lax),
         };
@@ -56,6 +56,55 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         match outcome {
             Ok(Some(value)) => Ok(Some(value)),
             Ok(None) | Err(Stop::TooManyErrors) => self.read_lax(lax, event),
+            Err(Stop::Unreadable) => {
+                self.issues.extend(issues);
+                Err(Stop::Unreadable)
+            }
+            Err(Stop::Sink(error)) => Err(Stop::Sink(error)),
+        }
+    }
+
+    /// A string that is no integer, float or bool, in a union whose string variant reads text
+    /// in one form only (`int | Literal["auto"]`): when that variant rejects it, the issue says
+    /// what else the union accepts, so the message is not about the `Literal` alone.
+    #[cold]
+    fn text_variant_only(
+        &mut self,
+        union: &UnionPlan,
+        string: NodeId,
+        event: Event<'input>,
+    ) -> Step<S> {
+        let mut accepted = Vec::new();
+        if union.integer.is_some() {
+            accepted.push("an integer");
+        }
+        if union.float.is_some() {
+            accepted.push("a number");
+        }
+        if union.bool.is_some() {
+            accepted.push("a boolean");
+        }
+        if accepted.is_empty() {
+            return self.value(string, event);
+        }
+        let events = [event];
+        let (outcome, mut issues) =
+            self.attempt(&events, |nested, event| nested.value(string, event));
+        match outcome {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) | Err(Stop::TooManyErrors) => {
+                let accepted = accepted.join(" or ");
+                for issue in &mut issues {
+                    issue.message = widen_message(&accepted, &issue.message);
+                }
+                let stop = outcome.is_err();
+                self.absorb(issues)?;
+                if stop {
+                    Err(Stop::TooManyErrors)
+                } else {
+                    Ok(None)
+                }
+            }
             Err(Stop::Unreadable) => {
                 self.issues.extend(issues);
                 Err(Stop::Unreadable)
@@ -365,6 +414,17 @@ enum LaxVariant {
 
 /// The variant that lax mode reads `text` as: `None` for an empty string, then the first of
 /// integer, float and bool that the text is valid for.
+/// `expected one of 'auto'` becomes `expected an integer or 'auto'`.
+fn widen_message(accepted: &str, message: &str) -> String {
+    match message.strip_prefix("expected one of ") {
+        Some(values) if values.contains(", ") => {
+            format!("expected {accepted} or one of {values}")
+        }
+        Some(value) => format!("expected {accepted} or {value}"),
+        None => format!("{message}; the union also accepts {accepted}"),
+    }
+}
+
 fn lax_variant(union: &UnionPlan, text: &str) -> Option<LaxVariant> {
     if let (true, true, Some(null)) = (text.is_empty(), union.empty_is_none, union.null) {
         return Some(LaxVariant::Null(null));
