@@ -2,6 +2,7 @@
 
 from oxiform import json, pairs, urlencoded
 from oxiform._fields import field
+from oxiform._json_schema import SchemaBundle, SchemaTarget, json_schema, json_schema_bundle
 from oxiform._models import Model, model, replace
 from oxiform._naive import NaiveDateTime
 from oxiform._oxiform import Limits, __version__, warmup
@@ -28,13 +29,17 @@ __all__ = [
     "OneOf",
     "OxiformError",
     "Pattern",
+    "SchemaBundle",
     "SchemaError",
+    "SchemaTarget",
     "Tagged",
     "Untagged",
     "ValidationError",
     "__version__",
     "field",
     "json",
+    "json_schema",
+    "json_schema_bundle",
     "model",
     "pairs",
     "replace",
