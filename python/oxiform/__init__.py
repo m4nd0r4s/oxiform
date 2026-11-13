@@ -1,6 +1,6 @@
 """Validate and (de)serialize Python types with a Rust engine."""
 
-from oxiform import json
+from oxiform import json, pairs, urlencoded
 from oxiform._fields import field
 from oxiform._models import Model, model, replace
 from oxiform._naive import NaiveDateTime
@@ -36,6 +36,8 @@ __all__ = [
     "field",
     "json",
     "model",
+    "pairs",
     "replace",
+    "urlencoded",
     "warmup",
 ]

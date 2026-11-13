@@ -1,3 +1,4 @@
+from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
 _T = TypeVar("_T")
@@ -8,7 +9,8 @@ Unknown = Literal["ignore", "forbid"]
 __version__: str
 
 ABI_VERSION: tuple[int, int]
-"""`(major, minor)` of the embedding C ABI this build exports through the capsule `_ABI_V1`."""
+"""`(major, minor)` of the embedding C ABI this build exports through the capsule `_ABI_V1`
+(1.1 added `decode_pairs`)."""
 _ABI_MAJORS: tuple[int, ...]
 """Every major version of the ABI that has a capsule, as `_ABI_V<major>`."""
 _ABI_V1: object
@@ -82,6 +84,55 @@ def json_decode(
     type: object,
     *,
     mode: Mode = "strict",
+    limits: Limits | None = None,
+    max_errors: int = 100,
+    unknown: Unknown | None = None,
+) -> Any: ...
+
+_Text = str | bytes
+_PairsLike = Iterable[tuple[_Text, _Text]] | Mapping[_Text, _Text]
+
+@overload
+def urlencoded_decode(
+    data: bytes | bytearray | memoryview | str,
+    type: type[_T],
+    *,
+    limits: Limits | None = None,
+    max_errors: int = 100,
+    unknown: Unknown | None = None,
+) -> _T:
+    """Reads a query string or an ``application/x-www-form-urlencoded`` body as a model, in lax
+    mode: ``%XX`` and ``+`` are decoded, a name given more than once gives a ``list``, ``tuple`` or
+    ``set`` field its values in order and is a ``duplicate_key`` problem for any other field."""
+
+@overload
+def urlencoded_decode(
+    data: bytes | bytearray | memoryview | str,
+    type: object,
+    *,
+    limits: Limits | None = None,
+    max_errors: int = 100,
+    unknown: Unknown | None = None,
+) -> Any: ...
+@overload
+def pairs_decode(
+    pairs: _PairsLike,
+    type: type[_T],
+    *,
+    case_insensitive: bool = False,
+    limits: Limits | None = None,
+    max_errors: int = 100,
+    unknown: Unknown | None = None,
+) -> _T:
+    """Reads ``(name, value)`` pairs (headers, cookies) as a model, in lax mode and without
+    decoding anything. ``case_insensitive=True`` matches names as header names are matched."""
+
+@overload
+def pairs_decode(
+    pairs: _PairsLike,
+    type: object,
+    *,
+    case_insensitive: bool = False,
     limits: Limits | None = None,
     max_errors: int = 100,
     unknown: Unknown | None = None,
