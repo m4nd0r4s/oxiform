@@ -10,7 +10,8 @@ pub(crate) fn slot_offset(cls: &Bound<'_, PyType>, name: &str) -> PyResult<Optio
     let py = cls.py();
     let member_type = py.import("types")?.getattr("MemberDescriptorType")?;
     for klass in cls.getattr("__mro__")?.try_iter()? {
-        let Some(descriptor) = klass?.getattr("__dict__")?.get_item(name).ok() else {
+        let klass = klass?;
+        let Some(descriptor) = klass.getattr("__dict__")?.get_item(name).ok() else {
             continue;
         };
         if !descriptor.get_type().is(&member_type) {
@@ -20,6 +21,18 @@ pub(crate) fn slot_offset(cls: &Bound<'_, PyType>, name: &str) -> PyResult<Optio
         // it stays alive as long as the class, which every user of the offset keeps.
         let member =
             unsafe { &*(*descriptor.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member };
+        // The offset is that of the layout of the class that owns the descriptor, and so of its
+        // subclasses. A descriptor copied from another class into this dict (`X.a = Other.s`)
+        // has the offset of a layout the instances of `klass` do not have.
+        // SAFETY: as above, the descriptor is a `PyMemberDescrObject`.
+        let owner = unsafe {
+            (*descriptor.as_ptr().cast::<ffi::PyMemberDescrObject>())
+                .d_common
+                .d_type
+        };
+        if owner.cast::<ffi::PyObject>() != klass.as_ptr() {
+            return Ok(None);
+        }
         let writable = member.flags & ffi::Py_READONLY == 0;
         let usable = member.type_code == ffi::Py_T_OBJECT_EX && writable && member.offset > 0;
         return Ok(usable.then_some(member.offset));
@@ -31,7 +44,9 @@ pub(crate) fn slot_offset(cls: &Bound<'_, PyType>, name: &str) -> PyResult<Optio
 ///
 /// # Safety
 ///
-/// `offset` must come from [`slot_offset`] for the exact type of `object` or one of its bases.
+/// `offset` must come from [`slot_offset`] for the exact type of `object` or one of its bases, and
+/// `object` must really be of that type (see `is_real_instance` in the encoder), not only claim
+/// to be.
 pub(crate) unsafe fn read_slot<'py>(
     object: &Bound<'py, PyAny>,
     offset: isize,

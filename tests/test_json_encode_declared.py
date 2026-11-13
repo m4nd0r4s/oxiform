@@ -3,7 +3,10 @@
 import abc
 import dataclasses
 import json
-from collections.abc import Callable
+import subprocess
+import sys
+import textwrap
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -821,3 +824,187 @@ def test_type_none_means_no_declared_type_and_none_is_spelled_type_of_none() -> 
     assert ox.json.encode(None, type=type(None)) == b"null"
     with pytest.raises(ox.EncodeError):
         ox.json.encode(1, type=type(None))
+
+
+# --- scalars never trust __class__ either ----------------------------------------------------
+
+_SECRET = "SECRETVALUE"
+
+
+@dataclass
+class Leaky:
+    """Writes its fields if it is ever walked as a model, and claims to be an ``int``."""
+
+    token: str = _SECRET
+
+    @property
+    def __class__(self) -> type:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return int
+
+
+class _LazyProxy:
+    """What lazy-object proxies do: report the class of the wrapped value, forward the rest."""
+
+    def __init__(self, wrapped: object, claimed: type) -> None:
+        self._wrapped = wrapped
+        self._claimed = claimed
+
+    @property
+    def __class__(self) -> type:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return self._claimed
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._wrapped, name)
+
+
+@dataclass
+class HoldsInt:
+    number: int
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [int, float, int | None, int | str, list[int], dict[str, int], Annotated[int, ox.Ge(0)]],
+)
+def test_a_value_that_claims_to_be_a_scalar_is_not_one(declared: Any) -> None:
+    for value in (Leaky(), _LazyProxy(Leaky(), int), _LazyProxy(Leaky(), float)):
+        wrapped: Any = (
+            [value]
+            if getattr(declared, "__origin__", None) is list
+            else {"k": value}
+            if getattr(declared, "__origin__", None) is dict
+            else value
+        )
+        with pytest.raises(ox.EncodeError) as raised:
+            ox.json.encode(wrapped, type=declared)
+        assert _SECRET not in str(raised.value)
+
+
+def test_a_field_declared_int_does_not_write_a_value_that_claims_to_be_one() -> None:
+    with pytest.raises(ox.EncodeError) as raised:
+        ox.json.encode(HoldsInt(Leaky()), type=HoldsInt)  # pyright: ignore[reportArgumentType]
+    assert raised.value.pointer == "/number"
+    assert _SECRET not in str(raised.value)
+    with pytest.raises(ox.EncodeError):
+        ox.json.encode({"number": _LazyProxy(Leaky(), int)}, type=HoldsInt)
+
+
+def test_a_value_that_claims_to_be_a_bool_or_a_str_is_not_one() -> None:
+    for declared in (bool, str, bytes, Decimal, date):
+        with pytest.raises(ox.EncodeError) as raised:
+            ox.json.encode(_LazyProxy(Leaky(), declared), type=declared)
+        assert _SECRET not in str(raised.value)
+
+
+def test_a_literal_takes_the_values_it_lists_by_exact_type() -> None:
+    class Name(str):
+        pass
+
+    declared = Literal["a", 1, None, True, Status.ON]
+    for value in ("a", 1, None, True, Status.ON):
+        ox.json.encode(value, type=declared)
+    for value in (Name("a"), False, 2, "b", "on", Status, 1.0):
+        with pytest.raises(ox.EncodeError):
+            ox.json.encode(value, type=declared)
+
+
+# --- slot descriptors that belong to another class -------------------------------------------
+
+
+def test_a_slot_descriptor_copied_from_another_class_is_not_read_by_offset() -> None:
+    code = textwrap.dedent(
+        """
+        from dataclasses import dataclass
+        import oxiform as ox
+
+        Other = type("Other", (), {"__slots__": tuple(f"s{i}" for i in range(4000))})
+
+        @dataclass(slots=True)
+        class X:
+            a: int
+
+        X.a = Other.s3999  # an offset about 32 KB into an object that is 32 bytes long
+        x = object.__new__(X)
+        for declared in (X, list[X]):
+            for value in (x, [x]):
+                try:
+                    ox.json.encode(value, type=declared)
+                except ox.EncodeError as error:
+                    assert "X" in str(error), error
+        try:
+            ox.json.encode(x)
+        except (TypeError, ox.EncodeError):
+            pass
+        print("ok")
+        """
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ok"
+
+
+def test_a_subclass_property_over_a_slotted_field_is_bypassed_by_the_raw_read() -> None:
+    """Documented in 5.1: a field that is a slot of the declared class is read from the slot."""
+
+    class Masked(SlottedDS):
+        @property
+        def a(self) -> int:  # pyright: ignore[reportIncompatibleVariableOverride]
+            return 0
+
+    value = object.__new__(Masked)
+    for name, content in (("a", 7), ("b", "x")):
+        vars(SlottedDS)[name].__set__(value, content)
+    assert encoded(value, SlottedDS) == {"a": 7, "b": "x"}
+
+
+# --- reading a field can raise ---------------------------------------------------------------
+
+
+class _Raises:
+    @property
+    def number(self) -> str:
+        raise RuntimeError("password is hunter2")
+
+
+def test_an_exception_while_reading_a_field_is_an_encode_error_naming_the_field() -> None:
+    with pytest.raises(ox.EncodeError) as raised:
+        ox.json.encode(_Raises(), type=Card)
+    message = str(raised.value)
+    assert 'reading the field "number" raised RuntimeError' in message
+    assert "as Card" in message
+    assert "hunter2" not in message
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+    class BadMapping(Mapping[str, Any]):
+        def __getitem__(self, key: str) -> Any:
+            raise ValueError("secret")
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(())
+
+        def __len__(self) -> int:
+            return 0
+
+    with pytest.raises(ox.EncodeError, match='reading the field "number" raised ValueError'):
+        ox.json.encode(BadMapping(), type=Card)
+    with pytest.raises(ox.EncodeError) as nested:
+        ox.json.encode([_Raises()], type=list[Card])
+    assert nested.value.pointer == "/0" or nested.value.pointer == ""
+
+
+def test_a_property_counts_as_an_attribute_and_an_unset_slot_does_not() -> None:
+    class Orm:
+        @property
+        def number(self) -> str:
+            return "42"
+
+    pick = Annotated[Pix | Card, ox.Untagged()]
+    assert encoded(Orm(), pick) == {"number": "42"}
+
+    class Partial:
+        __slots__ = ("key", "number")
+
+        def __init__(self) -> None:
+            self.number = "7"
+
+    assert encoded(Partial(), pick) == {"number": "7"}  # `key` is unset: the next variant

@@ -40,6 +40,12 @@ pub(crate) enum EncodeFailure {
         message: String,
         path: Vec<PathSegment>,
     },
+    /// Like `Unsupported`, for an exception raised by code of the value, kept as the cause.
+    Chained {
+        message: String,
+        path: Vec<PathSegment>,
+        cause: PyErr,
+    },
 }
 
 impl From<PyErr> for EncodeFailure {
@@ -62,6 +68,15 @@ impl EncodeFailure {
     pub(crate) fn into_error(self, py: Python<'_>) -> PyErr {
         match self {
             Self::Python(error) => error,
+            Self::Chained {
+                message,
+                path,
+                cause,
+            } => {
+                let error = Self::Unsupported { message, path }.into_error(py);
+                error.set_cause(py, Some(cause));
+                error
+            }
             Self::Unsupported { message, path } => {
                 let pointer = pointer(&path);
                 let full = if pointer.is_empty() {
@@ -78,7 +93,7 @@ impl EncodeFailure {
     }
 
     fn at(mut self, segment: impl FnOnce() -> PathSegment) -> Self {
-        if let Self::Unsupported { path, .. } = &mut self {
+        if let Self::Unsupported { path, .. } | Self::Chained { path, .. } = &mut self {
             path.insert(0, segment());
         }
         self

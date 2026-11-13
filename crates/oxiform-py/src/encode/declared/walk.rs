@@ -1,5 +1,7 @@
 //! Writes a value as a declared type.
 
+use std::collections::HashSet;
+
 use oxiform_core::issues::PathSegment;
 use oxiform_core::writer::EventWriter;
 use pyo3::exceptions::{PyAttributeError, PyKeyError};
@@ -470,11 +472,51 @@ fn source_of<'py>(spec: &StructSpec, object: &Bound<'py, PyAny>) -> PyResult<Opt
 /// `ABC.register`, and an object that only claims to be an instance has no such slots.
 /// `PyType_IsSubtype` looks at the type and its bases only.
 fn is_real_instance(class: &Bound<'_, PyType>, object: &Bound<'_, PyAny>) -> bool {
-    let object_type = object.get_type();
+    is_real_subtype(&object.get_type(), class)
+}
+
+fn is_real_subtype(object_type: &Bound<'_, PyType>, class: &Bound<'_, PyType>) -> bool {
     // SAFETY: both pointers come from live type objects that are borrowed for the call.
     object_type.is(class)
         || unsafe { pyo3::ffi::PyType_IsSubtype(object_type.as_type_ptr(), class.as_type_ptr()) }
             != 0
+}
+
+/// Whether the real class of `object` is one of `classes` or a subclass of one. Like
+/// [`is_real_instance`], and for the same reason, never `isinstance`: a value that claims to
+/// be an `int` through `__class__` must not be written as one.
+fn real_instance_of_any(object: &Bound<'_, PyAny>, classes: &Bound<'_, PyTuple>) -> bool {
+    let object_type = object.get_type();
+    classes.iter().any(|class| {
+        class
+            .cast::<PyType>()
+            .is_ok_and(|class| is_real_subtype(&object_type, class))
+    })
+}
+
+/// Whether `object` is one of the values of a `Literal`: of the very same type and equal.
+fn literal_contains(
+    strings: &HashSet<String>,
+    integers: &HashSet<i64>,
+    others: &[Py<PyAny>],
+    object: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    if let Ok(text) = object.cast_exact::<PyString>() {
+        return Ok(text.to_str().is_ok_and(|text| strings.contains(text)));
+    }
+    if let Ok(number) = object.cast_exact::<PyInt>()
+        && let Ok(number) = number.extract::<i64>()
+    {
+        return Ok(integers.contains(&number));
+    }
+    let object_type = object.get_type();
+    for value in others {
+        let value = value.bind(object.py());
+        if object.is(value) || (value.get_type().is(&object_type) && object.eq(value)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The value of `field`, as an attribute or a key of `object`.
@@ -486,6 +528,23 @@ fn read_field<'py>(
 ) -> Result<Bound<'py, PyAny>, EncodeFailure> {
     let py = object.py();
     let name = field.name.bind(py);
+    let raised = |error: PyErr| {
+        let raised = error
+            .get_type(py)
+            .qualname()
+            .map_or_else(|_| "an exception".to_owned(), |name| name.to_string());
+        EncodeFailure::Chained {
+            message: format!(
+                "cannot encode {} as {}: reading the field {:?} raised {raised}; fix the \
+                 property or the mapping, or declare a type without that field",
+                type_name(object),
+                spec.name,
+                name.to_string()
+            ),
+            path: Vec::new(),
+            cause: error,
+        }
+    };
     let found = match source {
         Source::Instance => {
             let slot = field.offset.and_then(|offset| {
@@ -495,16 +554,16 @@ fn read_field<'py>(
             });
             match slot {
                 Some(value) => Some(value),
-                None => attribute(object, name)?,
+                None => attribute(object, name).map_err(raised)?,
             }
         }
-        Source::Dict(dict) => dict.get_item(name)?,
+        Source::Dict(dict) => dict.get_item(name).map_err(raised)?,
         Source::Mapping(mapping) => match mapping.get_item(name) {
             Ok(value) => Some(value),
             Err(error) if error.is_instance_of::<PyKeyError>(py) => None,
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(raised(error)),
         },
-        Source::Object => attribute(object, name)?,
+        Source::Object => attribute(object, name).map_err(raised)?,
     };
     found.ok_or_else(|| {
         let (container, lookup) = match source {
@@ -555,32 +614,27 @@ fn matches(
                     .any(|class| class.is(&object_type))
             }
             Strictness::Instance => {
-                object.is_instance(leaf.classes.bind(py))?
+                real_instance_of_any(object, leaf.classes.bind(py))
                     && match &leaf.excluded {
-                        Some(excluded) => !object.is_instance(excluded.bind(py))?,
+                        Some(excluded) => !real_instance_of_any(object, excluded.bind(py)),
                         None => true,
                     }
             }
             Strictness::Lenient => match &leaf.lenient {
                 Some(lenient) => {
-                    object.is_instance(lenient.bind(py))?
+                    real_instance_of_any(object, lenient.bind(py))
                         && !object.is_instance_of::<pyo3::types::PyBool>()
                 }
                 None => false,
             },
         },
-        Declared::Literal { values, .. } => {
-            if strictness == Strictness::Lenient {
-                return Ok(false);
-            }
-            let object_type = object.get_type();
-            for value in values {
-                let value = value.bind(py);
-                if value.get_type().is(&object_type) && object.eq(value)? {
-                    return Ok(true);
-                }
-            }
-            false
+        Declared::Literal {
+            strings,
+            integers,
+            others,
+            ..
+        } => {
+            strictness == Strictness::Exact && literal_contains(strings, integers, others, object)?
         }
         Declared::Struct(index) => {
             let spec = &plan.structs[*index];
@@ -644,20 +698,32 @@ fn has_every_field(
     Ok(true)
 }
 
-/// Whether `object` has the attribute `name` without running code of the object: no property
-/// and no `__getattr__`, so an object that answers every name does not match every model.
+/// Whether `object` has the attribute `name` as its class or instance defines it: a property
+/// counts (it is read when the model is written), a catch-all `__getattr__` does not, so an
+/// object that answers every name does not match every model, and neither does an unset slot.
 fn has_static_attribute(object: &Bound<'_, PyAny>, name: &Bound<'_, PyString>) -> PyResult<bool> {
     let py = object.py();
     match GETATTR_STATIC
         .import(py, "inspect", "getattr_static")?
         .call1((object, name))
     {
+        // A slot is found whether or not it is set; only a set one is an attribute.
+        Ok(found)
+            if found.get_type().is(MEMBER_DESCRIPTOR.import(
+                py,
+                "types",
+                "MemberDescriptorType",
+            )?) =>
+        {
+            Ok(object.hasattr(name).unwrap_or(false))
+        }
         Ok(_) => Ok(true),
         Err(error) if error.is_instance_of::<PyAttributeError>(py) => Ok(false),
         Err(error) => Err(error),
     }
 }
 
+static MEMBER_DESCRIPTOR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static GETATTR_STATIC: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn type_name(object: &Bound<'_, PyAny>) -> String {

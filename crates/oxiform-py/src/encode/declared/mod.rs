@@ -5,12 +5,13 @@
 
 mod walk;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyString, PyTuple, PyType};
+use pyo3::types::{PyDict, PyInt, PyString, PyTuple, PyType};
 
 use super::fields::{HintMode, Omission, read_omission};
 use crate::compiled::compiled_for;
@@ -36,7 +37,11 @@ pub(super) enum Declared {
     Leaf(Leaf),
     Literal {
         name: String,
-        values: Vec<Py<PyAny>>,
+        /// The values by kind, so that a check is a hash lookup: exact `str`s, exact `int`s
+        /// that fit 64 bits, and the rest (`bool`, `None`, enum members, `bytes`, big ints).
+        strings: HashSet<String>,
+        integers: HashSet<i64>,
+        others: Vec<Py<PyAny>>,
     },
     Optional(Box<Declared>),
     List(Box<Declared>),
@@ -203,13 +208,7 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<Declared> {
             excluded: non_empty(&item(3)?)?,
             lenient: non_empty(&item(4)?)?,
         }),
-        "literal" => Declared::Literal {
-            name: item(1)?.extract()?,
-            values: item(2)?
-                .try_iter()?
-                .map(|value| value.map(Bound::unbind))
-                .collect::<PyResult<_>>()?,
-        },
+        "literal" => read_literal(item(1)?.extract()?, &item(2)?)?,
         "optional" => Declared::Optional(Box::new(read_type(&item(1)?)?)),
         "list" => Declared::List(Box::new(read_type(&item(1)?)?)),
         "dict" => Declared::Dict(Box::new(read_type(&item(1)?)?)),
@@ -248,6 +247,32 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<Declared> {
                 "unknown declared type kind {other:?}"
             )));
         }
+    })
+}
+
+fn read_literal(name: String, values: &Bound<'_, PyAny>) -> PyResult<Declared> {
+    let mut strings = HashSet::new();
+    let mut integers = HashSet::new();
+    let mut others = Vec::new();
+    for value in values.try_iter()? {
+        let value = value?;
+        if let Ok(text) = value.cast_exact::<PyString>() {
+            strings.insert(text.to_str()?.to_owned());
+        } else if let Some(number) = value
+            .cast_exact::<PyInt>()
+            .ok()
+            .and_then(|number| number.extract::<i64>().ok())
+        {
+            integers.insert(number);
+        } else {
+            others.push(value.unbind());
+        }
+    }
+    Ok(Declared::Literal {
+        name,
+        strings,
+        integers,
+        others,
     })
 }
 
