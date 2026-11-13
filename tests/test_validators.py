@@ -370,6 +370,16 @@ def test_a_nested_decode_error_inside_a_validator_is_an_invalid_problem() -> Non
     assert found[0][:2] == ("invalid", "/blob")
 
 
+def test_ox_invalid_survives_pickle_and_copy() -> None:
+    import copy
+    import pickle
+
+    error = ox.Invalid("text", code="c", path=("a", 1))
+    for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):  # noqa: S301
+        assert isinstance(clone, ox.Invalid)
+        assert (clone.message, clone.code, clone.path) == ("text", "c", ("a", 1))
+
+
 def test_ox_invalid_is_a_value_error_and_checks_its_arguments() -> None:
     error = ox.Invalid("text", code="c", path=("a", 1))
     assert isinstance(error, ValueError) and isinstance(error, ox.OxiformError)

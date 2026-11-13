@@ -1,6 +1,6 @@
 """Exceptions raised by oxiform."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import NotRequired, Self, TypedDict, cast
 
 from oxiform._problem import check_status, status_title
@@ -68,6 +68,15 @@ class Invalid(OxiformError, ValueError):
         self.code = code
         self.path = _segments(path)
         """The segments of the path, relative to the checked value; empty for the value itself."""
+
+    def __reduce__(self) -> tuple[Callable[..., "Invalid"], tuple[object, ...]]:
+        # The keyword-only arguments are lost by the default reduce, so pickling and copying
+        # (multiprocessing, `copy.copy`) go through here.
+        return (_rebuild_invalid, (self.message, self.code, self.path))
+
+
+def _rebuild_invalid(message: str, code: str, path: tuple[str | int, ...]) -> "Invalid":
+    return Invalid(message, code=code, path=path)
 
 
 def _segments(path: object) -> tuple[str | int, ...]:
