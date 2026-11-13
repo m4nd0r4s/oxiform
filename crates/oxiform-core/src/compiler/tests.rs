@@ -12,6 +12,7 @@ fn field(name: &str, value_type: TypeDescription) -> FieldDescription {
         aliases: Vec::new(),
         value_type,
         has_default: false,
+        validated: false,
     }
 }
 
@@ -24,6 +25,7 @@ fn single_struct(fields: Vec<FieldDescription>) -> Description {
             unknown_fields: UnknownFields::Ignore,
             tag: "User".into(),
             tag_field: None,
+            validated: false,
         }],
         choices: Vec::new(),
         conversions: Vec::new(),

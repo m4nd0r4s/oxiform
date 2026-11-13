@@ -24,6 +24,8 @@ pub enum ErrorCode {
     Tag,
     Timezone,
     LimitExceeded,
+    /// A validator rejected the value (`ox.Invalid`, `ValueError`, `TypeError`).
+    Invalid,
 }
 
 impl ErrorCode {
@@ -46,6 +48,7 @@ impl ErrorCode {
             Self::Tag => "tag",
             Self::Timezone => "timezone",
             Self::LimitExceeded => "limit_exceeded",
+            Self::Invalid => "invalid",
         }
     }
 }
@@ -76,6 +79,10 @@ pub enum ContextValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Issue {
     pub code: ErrorCode,
+    /// The code a validator chose (`ox.Invalid(code="reserved")`): when it is set, `code` is
+    /// [`ErrorCode::Invalid`] and this is what the issue reports. Read it with
+    /// [`Issue::code_text`].
+    pub user_code: Option<String>,
     pub path: Vec<PathSegment>,
     pub message: String,
     /// The received value as text, truncated; `None` for containers.
@@ -84,6 +91,13 @@ pub struct Issue {
 }
 
 impl Issue {
+    /// The code as text: the one a validator chose, or the stable code of `code`.
+    pub fn code_text(&self) -> &str {
+        self.user_code
+            .as_deref()
+            .unwrap_or_else(|| self.code.as_str())
+    }
+
     /// The path as a JSON Pointer (RFC 6901): `/addresses/0/street`.
     pub fn pointer(&self) -> String {
         let mut pointer = String::new();

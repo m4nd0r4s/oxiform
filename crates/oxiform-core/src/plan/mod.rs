@@ -77,6 +77,84 @@ impl Plan {
     pub fn conversion(&self, id: ConversionId) -> &ConversionDescription {
         &self.conversions[id.index()]
     }
+
+    /// Whether a value read as `node` can be `None`: `Any`, `None`, `T | None`, and a union or
+    /// an untagged union with a variant that is.
+    pub fn accepts_none(&self, node: NodeId) -> bool {
+        match self.node(node) {
+            Node::Any | Node::None | Node::Optional { .. } => true,
+            Node::Union(union) => union.null.is_some(),
+            Node::Untagged(variants) => variants.iter().any(|(_, node)| self.accepts_none(*node)),
+            _ => false,
+        }
+    }
+
+    /// Whether an instance of `structure` holds a `Secret` anywhere inside: in a field, in a
+    /// model nested in a field, in an item of a collection. It is what decides whether a
+    /// message made from the instance may be shown.
+    pub fn holds_secret(&self, structure: StructId) -> bool {
+        let mut visited = vec![false; self.structs.len()];
+        self.struct_holds_secret(structure, &mut visited)
+    }
+
+    /// Like [`holds_secret`](Self::holds_secret) for a value read as `node`: it is, or holds, a
+    /// `Secret`.
+    pub fn node_holds_a_secret(&self, node: NodeId) -> bool {
+        let mut visited = vec![false; self.structs.len()];
+        self.node_holds_secret(node, &mut visited)
+    }
+
+    fn struct_holds_secret(&self, structure: StructId, visited: &mut [bool]) -> bool {
+        if std::mem::replace(&mut visited[structure.index()], true) {
+            return false;
+        }
+        self.struct_plan(structure)
+            .fields
+            .iter()
+            .any(|field| self.node_holds_secret(field.value, visited))
+    }
+
+    fn node_holds_secret(&self, node: NodeId, visited: &mut [bool]) -> bool {
+        match self.node(node) {
+            Node::Secret(_) => true,
+            Node::List { items, .. } => self.node_holds_secret(*items, visited),
+            Node::Dict { values, .. } => self.node_holds_secret(*values, visited),
+            Node::Optional { inner, .. } => self.node_holds_secret(*inner, visited),
+            Node::Tuple(items) => items
+                .iter()
+                .any(|item| self.node_holds_secret(*item, visited)),
+            Node::Struct(id) => self.struct_holds_secret(*id, visited),
+            Node::Union(union) => [
+                union.null,
+                union.bool,
+                union.integer,
+                union.float,
+                union.string,
+                union.sequence,
+                union.map,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|variant| self.node_holds_secret(variant, visited)),
+            Node::Tagged(tagged) => tagged
+                .variants
+                .values()
+                .any(|id| self.struct_holds_secret(*id, visited)),
+            Node::Untagged(variants) => variants
+                .iter()
+                .any(|(_, node)| self.node_holds_secret(*node, visited)),
+            Node::Any
+            | Node::Bool
+            | Node::None
+            | Node::Integer(_)
+            | Node::Float(_)
+            | Node::String(_)
+            | Node::Bytes { .. }
+            | Node::Temporal(_)
+            | Node::Converted(_)
+            | Node::Choice(_) => false,
+        }
+    }
 }
 
 /// A compiled structure.
@@ -87,6 +165,11 @@ pub struct StructPlan {
     pub unknown_fields: UnknownFields,
     /// The key of the tag and the value it must hold, when the structure declares a tag field.
     pub tag: Option<(String, String)>,
+    /// Whether the sink checks the value of at least one field ([`FieldPlan::validated`]).
+    /// Structures that have none skip the step altogether.
+    pub field_validators: bool,
+    /// Whether the sink checks each instance after it is built.
+    pub model_validators: bool,
     field_indices: FxHashMap<String, usize>,
     /// The same names with ASCII letters in lower case, for sources that do not tell case apart.
     folded_indices: FxHashMap<String, usize>,
@@ -98,7 +181,9 @@ impl StructPlan {
         fields: Vec<FieldPlan>,
         unknown_fields: UnknownFields,
         tag: Option<(String, String)>,
+        model_validators: bool,
     ) -> Self {
+        let field_validators = fields.iter().any(|field| field.validated);
         let field_indices = fields
             .iter()
             .enumerate()
@@ -122,6 +207,8 @@ impl StructPlan {
             fields,
             unknown_fields,
             tag,
+            field_validators,
+            model_validators,
             field_indices,
             folded_indices,
         }
@@ -159,4 +246,6 @@ pub struct FieldPlan {
     pub aliases: Vec<String>,
     pub value: NodeId,
     pub has_default: bool,
+    /// The sink checks the value once it is read, after the whole map (`@ox.validator`).
+    pub validated: bool,
 }

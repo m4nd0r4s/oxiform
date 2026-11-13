@@ -132,6 +132,7 @@ impl Compiler<'_> {
                 aliases: field.aliases.clone(),
                 value,
                 has_default: field.has_default,
+                validated: field.validated,
             });
         }
         let tag = match &description.tag_field {
@@ -149,6 +150,7 @@ impl Compiler<'_> {
             fields,
             description.unknown_fields,
             tag,
+            description.validated,
         ))
     }
 
