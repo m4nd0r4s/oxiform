@@ -88,6 +88,8 @@ pub struct StructPlan {
     /// The key of the tag and the value it must hold, when the structure declares a tag field.
     pub tag: Option<(String, String)>,
     field_indices: FxHashMap<String, usize>,
+    /// The same names with ASCII letters in lower case, for sources that do not tell case apart.
+    folded_indices: FxHashMap<String, usize>,
 }
 
 impl StructPlan {
@@ -106,18 +108,37 @@ impl StructPlan {
                     .map(move |key| (key.clone(), index))
             })
             .collect();
+        let folded_indices = fields
+            .iter()
+            .enumerate()
+            .flat_map(|(index, field)| {
+                std::iter::once(&field.wire_name)
+                    .chain(&field.aliases)
+                    .map(move |key| (key.to_ascii_lowercase(), index))
+            })
+            .collect();
         Self {
             name,
             fields,
             unknown_fields,
             tag,
             field_indices,
+            folded_indices,
         }
     }
 
     /// The index of the field read from `wire_name`, or from one of its aliases.
     pub fn field_index(&self, wire_name: &str) -> Option<usize> {
         self.field_indices.get(wire_name).copied()
+    }
+
+    /// Like [`field_index`](Self::field_index), without regard to ASCII case (header names).
+    pub fn field_index_folded(&self, name: &str) -> Option<usize> {
+        if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            self.folded_indices.get(&name.to_ascii_lowercase()).copied()
+        } else {
+            self.folded_indices.get(name).copied()
+        }
     }
 
     /// Like [`field_index`](Self::field_index), checking `expected` first: keys usually come

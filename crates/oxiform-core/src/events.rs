@@ -32,6 +32,10 @@ pub enum ReaderErrorKind {
     DepthLimit { limit: usize },
     /// A string or a key is longer than the configured limit, in bytes.
     StringLimit { limit: usize },
+    /// A source of pairs has more pairs than `max_items`.
+    ItemLimit { limit: usize },
+    /// A source of pairs is larger than `max_bytes`.
+    ByteLimit { limit: usize },
 }
 
 /// A reader failure with its place in the input. Boxed, so the `Result` of every event stays

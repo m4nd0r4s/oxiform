@@ -5,6 +5,7 @@ mod choices;
 mod collections;
 mod conversions;
 mod numbers;
+mod pairs;
 mod replay;
 mod scalars;
 mod structs;
@@ -54,21 +55,40 @@ where
         issues: Vec::new(),
     };
     let outcome = executor.run();
-    let issues = executor.issues;
-    let report = |kind, truncated| {
-        Failure::Invalid(Report {
-            kind,
-            issues,
-            truncated,
-        })
+    executor.finish(outcome)
+}
+
+/// Reads one set of pairs (a query string, a form, headers or cookies) as the structure at the
+/// root of `plan`, in lax mode whatever `options.mode` says.
+///
+/// The reader emits one map: each key once (`oxiform_formats::pairs`), with the values it was given as a sequence. A field
+/// that is a sequence reads the sequence; any other field takes the only value, and a key
+/// repeated for it is a `duplicate_key` issue. `fold_case` matches keys without regard to ASCII
+/// case, as header names are matched.
+pub fn execute_pairs<'input, R, S>(
+    plan: &Plan,
+    reader: &mut R,
+    sink: &mut S,
+    options: &Options,
+    fold_case: bool,
+) -> Result<S::Value, Failure<S::Error>>
+where
+    R: EventReader<'input>,
+    S: Sink,
+{
+    let mut executor = Executor {
+        marker: std::marker::PhantomData,
+        plan,
+        reader,
+        sink,
+        limits: &options.limits,
+        mode: Mode::Lax,
+        max_errors: options.max_errors.max(1),
+        unknown: options.unknown,
+        issues: Vec::new(),
     };
-    match outcome {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => Err(report(ReportKind::Validation, false)),
-        Err(Stop::TooManyErrors) => Err(report(ReportKind::Validation, true)),
-        Err(Stop::Unreadable) => Err(report(ReportKind::Decode, false)),
-        Err(Stop::Sink(error)) => Err(Failure::Sink(error)),
-    }
+    let outcome = executor.run_pairs(fold_case);
+    executor.finish(outcome)
 }
 
 /// Why a run stops before the end of the input.
@@ -97,6 +117,25 @@ pub(crate) struct Executor<'run, 'input, R, S> {
 }
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
+    /// The result of a run: the value, or the report of the issues recorded.
+    fn finish(self, outcome: Step<S>) -> Result<S::Value, Failure<S::Error>> {
+        let issues = self.issues;
+        let report = |kind, truncated| {
+            Failure::Invalid(Report {
+                kind,
+                issues,
+                truncated,
+            })
+        };
+        match outcome {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Err(report(ReportKind::Validation, false)),
+            Err(Stop::TooManyErrors) => Err(report(ReportKind::Validation, true)),
+            Err(Stop::Unreadable) => Err(report(ReportKind::Decode, false)),
+            Err(Stop::Sink(error)) => Err(Failure::Sink(error)),
+        }
+    }
+
     fn run(&mut self) -> Step<S> {
         let event = self.next_event()?;
         let value = self.value(self.plan.root(), event)?;
@@ -280,6 +319,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             ReaderErrorKind::StringLimit { limit } => {
                 limit_context(&mut context, "max_str_len", limit)
             }
+            ReaderErrorKind::ItemLimit { limit } => limit_context(&mut context, "max_items", limit),
+            ReaderErrorKind::ByteLimit { limit } => limit_context(&mut context, "max_bytes", limit),
         };
         let message = format!(
             "{} (line {}, column {})",

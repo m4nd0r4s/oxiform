@@ -5,6 +5,7 @@ mod collections;
 mod conversions;
 mod lax;
 mod limits;
+mod pairs;
 mod scalars;
 mod structs;
 mod support;

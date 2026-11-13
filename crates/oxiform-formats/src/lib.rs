@@ -2,3 +2,4 @@
 //! executor in `oxiform-core` is shared by all formats.
 
 pub mod json;
+pub mod pairs;
