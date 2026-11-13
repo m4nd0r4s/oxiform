@@ -7,10 +7,15 @@
 //!   the `size_of` of the struct the host was built against. New fields are only ever appended, and
 //!   oxiform reads only the `struct_size` bytes it was given (a field the host did not know of keeps
 //!   its default), so an older host runs on a newer oxiform without changes.
-//! - Structs oxiform returns ([`OxReportView`], [`OxIssue`]) carry the stride of their element
-//!   (`issue_size`) so a host built for an earlier minor still walks the array of a later one.
-//!   Leaf elements ([`OxStr`], [`OxPathSegment`], [`OxContextEntry`], [`OxContextValue`],
-//!   [`OxChoiceValue`], [`OxVariant`]) are frozen within a major version.
+//! - Structs oxiform returns carry the stride of every array of structs they point to
+//!   ([`OxReportView`]: `issue_size`, `segment_size`, `entry_size`, `variant_size`,
+//!   `choice_size`), so a later minor can append fields to [`OxIssue`], [`OxPathSegment`],
+//!   [`OxContextEntry`] (and so [`OxContextValue`], its last field), [`OxVariant`] and
+//!   [`OxChoiceValue`] and a host built for an earlier one still walks the arrays: step by the
+//!   stride, read only the fields you know. [`OxStr`] is frozen within a major version.
+//! - A host must **skip** a `kind` it does not know (`OxContextValue::kind`,
+//!   `OxChoiceValue::kind`, `OxPathSegment::kind`): a later minor may add kinds, and an entry of an
+//!   unknown kind is not an error.
 //! - Enumerations are plain `u32` constants and flags are `u32` bit sets, never Rust enums or
 //!   `bool`, so an unknown value from a newer peer is detected, not undefined behavior.
 
@@ -147,17 +152,27 @@ impl OxStr {
 // --- options ----------------------------------------------------------------------------------
 
 /// `ox.Limits` (section 7 of the specification), size-prefixed.
+///
+/// In a limits struct a host fills in, **0 in a size field means "the default of this field"**
+/// (as `max_errors` does), so `{ .struct_size = sizeof l, .max_bytes = N }` changes one limit and
+/// leaves the others at their defaults. To remove a limit, set it to `u64::MAX` (or start from
+/// `limits_none`); a limit of 0 itself (reject every document) cannot be written, and 1 is the
+/// smallest. `max_depth` is at most 128 whatever is given.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OxLimits {
     /// `size_of::<OxLimits>()` of the struct the caller was built against.
     pub struct_size: u32,
     pub reserved: u32,
+    /// 0: the default (64 MiB).
     pub max_bytes: u64,
-    /// At most 128, whatever is given.
+    /// 0: the default (128). At most 128, whatever is given.
     pub max_depth: u64,
+    /// 0: the default (1,000,000).
     pub max_items: u64,
+    /// 0: the default (16 MiB).
     pub max_str_len: u64,
+    /// 0: the default (4300).
     pub max_int_digits: u64,
 }
 
@@ -311,6 +326,14 @@ pub struct OxReportView {
     /// The stride of `issues`, and of every array of [`OxIssue`] below it (the issues of a union's
     /// variants). Step by this, not by `size_of::<OxIssue>()`.
     pub issue_size: u32,
+    /// The stride of every array of [`OxPathSegment`].
+    pub segment_size: u32,
+    /// The stride of every array of [`OxContextEntry`].
+    pub entry_size: u32,
+    /// The stride of every array of [`OxVariant`].
+    pub variant_size: u32,
+    /// The stride of every array of [`OxChoiceValue`].
+    pub choice_size: u32,
     pub issues: *const OxIssue,
     pub issue_count: usize,
 }

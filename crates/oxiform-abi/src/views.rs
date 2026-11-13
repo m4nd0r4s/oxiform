@@ -6,8 +6,8 @@ use core::slice;
 use crate::types::{
     OX_CHOICE_BOOL, OX_CHOICE_INTEGER, OX_CHOICE_NULL, OX_CHOICE_STRING, OX_CTX_BOOL, OX_CTX_FLOAT,
     OX_CTX_INTEGER, OX_CTX_INTEGERS, OX_CTX_TEXT, OX_CTX_TEXTS, OX_CTX_VALUES, OX_CTX_VARIANTS,
-    OX_REPORT_DECODE, OX_SEGMENT_INDEX, OxChoiceValue, OxContextEntry, OxContextValue, OxIssue,
-    OxPathSegment, OxReportView, OxStr, OxVariant,
+    OX_REPORT_DECODE, OX_SEGMENT_INDEX, OX_SEGMENT_KEY, OxChoiceValue, OxContextValue, OxIssue,
+    OxReportView, OxStr, OxVariant,
 };
 
 /// The text of a string of a view.
@@ -70,33 +70,60 @@ impl<'a> ReportView<'a> {
     }
 
     pub fn issues(&self) -> impl Iterator<Item = IssueView<'a>> + use<'a> {
-        issues(self.raw.issues, self.raw.issue_count, self.raw.issue_size)
+        let strides = Strides {
+            issue: self.raw.issue_size,
+            segment: self.raw.segment_size,
+            entry: self.raw.entry_size,
+            variant: self.raw.variant_size,
+            choice: self.raw.choice_size,
+        };
+        issues(self.raw.issues, self.raw.issue_count, strides)
     }
+}
+
+/// The strides of the arrays of structs of a report.
+#[derive(Debug, Clone, Copy)]
+struct Strides {
+    issue: u32,
+    segment: u32,
+    entry: u32,
+    variant: u32,
+    choice: u32,
+}
+
+/// The elements of an array of structs `stride` bytes apart.
+///
+/// # Safety
+///
+/// `start` must point to `count` elements `stride` bytes apart, each valid for `'a`: an array of a
+/// live report. A `stride` shorter than `T` (a report of an oxiform older than this host, which the
+/// version check at import rules out) yields nothing instead of reading out of bounds.
+unsafe fn strided<'a, T: 'a>(
+    start: *const T,
+    count: usize,
+    stride: u32,
+) -> impl Iterator<Item = &'a T> + use<'a, T> {
+    let usable = count > 0 && stride as usize >= size_of::<T>();
+    (0..if usable { count } else { 0 }).map(move |index| {
+        // SAFETY: the caller guarantees `count` elements `stride` bytes apart at `start`.
+        unsafe { &*start.cast::<u8>().add(index * stride as usize).cast::<T>() }
+    })
 }
 
 fn issues<'a>(
     start: *const OxIssue,
     count: usize,
-    stride: u32,
+    strides: Strides,
 ) -> impl Iterator<Item = IssueView<'a>> + use<'a> {
-    (0..count).map(move |index| {
-        // SAFETY: `start` and `stride` come from a view of a live report that has `count` issues
-        // `stride` bytes apart, each valid for `'a`.
-        let raw = unsafe {
-            &*start
-                .cast::<u8>()
-                .add(index * stride as usize)
-                .cast::<OxIssue>()
-        };
-        IssueView { raw, stride }
-    })
+    // SAFETY: `start`, `count` and the stride come from a view of a live report.
+    unsafe { strided(start, count, strides.issue) }.map(move |raw| IssueView { raw, strides })
 }
 
 /// One problem found in the input.
 #[derive(Debug, Clone, Copy)]
 pub struct IssueView<'a> {
     raw: &'a OxIssue,
-    stride: u32,
+    strides: Strides,
 }
 
 /// One step of a path.
@@ -164,37 +191,36 @@ impl<'a> IssueView<'a> {
         (self.raw.has_input != 0).then(|| unsafe { text(self.raw.input) })
     }
 
+    /// The steps of the path. A step of a kind this host does not know is skipped.
     pub fn path(&self) -> impl Iterator<Item = Segment<'a>> + use<'a> {
-        // SAFETY: `path` points to `path_len` valid segments of a live report.
-        let segments: &'a [OxPathSegment] = unsafe { array(self.raw.path, self.raw.path_len) };
-        segments.iter().map(|segment| {
-            if segment.kind == OX_SEGMENT_INDEX {
-                Segment::Index(segment.index)
-            } else {
-                // SAFETY: a string of a view of a live report.
-                Segment::Key(unsafe { text(segment.key) })
-            }
+        // SAFETY: `path` points to `path_len` segments of a live report.
+        let segments = unsafe { strided(self.raw.path, self.raw.path_len, self.strides.segment) };
+        segments.filter_map(|segment| match segment.kind {
+            OX_SEGMENT_INDEX => Some(Segment::Index(segment.index)),
+            // SAFETY: a string of a view of a live report.
+            OX_SEGMENT_KEY => Some(Segment::Key(unsafe { text(segment.key) })),
+            _ => None,
         })
     }
 
+    /// The entries of `ctx`. An entry of a kind this host does not know is skipped.
     pub fn context(&self) -> impl Iterator<Item = (&'a str, ContextValue<'a>)> + use<'a> {
-        // SAFETY: `context` points to `context_len` valid entries of a live report.
-        let entries: &'a [OxContextEntry] =
-            unsafe { array(self.raw.context, self.raw.context_len) };
-        let stride = self.stride;
-        entries.iter().map(move |entry| {
+        let strides = self.strides;
+        // SAFETY: `context` points to `context_len` entries of a live report.
+        let entries = unsafe { strided(self.raw.context, self.raw.context_len, strides.entry) };
+        entries.filter_map(move |entry| {
             // SAFETY: a string of a view of a live report.
             let key = unsafe { text(entry.key) };
-            (key, context_value(&entry.value, stride))
+            context_value(&entry.value, strides).map(|value| (key, value))
         })
     }
 }
 
-fn context_value<'a>(value: &'a OxContextValue, stride: u32) -> ContextValue<'a> {
+fn context_value(value: &OxContextValue, strides: Strides) -> Option<ContextValue<'_>> {
     // SAFETY (all arms): `items` and `len` describe an array of the type the `kind` says, of a
     // live report; strings are strings of a view.
     unsafe {
-        match value.kind {
+        Some(match value.kind {
             OX_CTX_BOOL => ContextValue::Bool(value.integer != 0),
             OX_CTX_INTEGER => ContextValue::Integer(value.integer),
             OX_CTX_FLOAT => ContextValue::Float(value.float),
@@ -207,30 +233,32 @@ fn context_value<'a>(value: &'a OxContextValue, stride: u32) -> ContextValue<'a>
                     .collect(),
             ),
             OX_CTX_VALUES => ContextValue::Values(
-                array(value.items.cast::<OxChoiceValue>(), value.len)
-                    .iter()
-                    .map(|choice| match choice.kind {
-                        OX_CHOICE_NULL => ChoiceValue::Null,
-                        OX_CHOICE_BOOL => ChoiceValue::Bool(choice.integer != 0),
-                        OX_CHOICE_INTEGER => ChoiceValue::Integer(choice.integer),
-                        OX_CHOICE_STRING => ChoiceValue::String(text(choice.text)),
-                        _ => ChoiceValue::Null,
-                    })
-                    .collect(),
+                strided(
+                    value.items.cast::<OxChoiceValue>(),
+                    value.len,
+                    strides.choice,
+                )
+                .filter_map(|choice| match choice.kind {
+                    OX_CHOICE_NULL => Some(ChoiceValue::Null),
+                    OX_CHOICE_BOOL => Some(ChoiceValue::Bool(choice.integer != 0)),
+                    OX_CHOICE_INTEGER => Some(ChoiceValue::Integer(choice.integer)),
+                    OX_CHOICE_STRING => Some(ChoiceValue::String(text(choice.text))),
+                    _ => None,
+                })
+                .collect(),
             ),
             OX_CTX_VARIANTS => ContextValue::Variants(
-                array(value.items.cast::<OxVariant>(), value.len)
-                    .iter()
+                strided(value.items.cast::<OxVariant>(), value.len, strides.variant)
                     .map(|variant| {
                         (
                             text(variant.name),
-                            issues(variant.issues, variant.issue_count, stride).collect(),
+                            issues(variant.issues, variant.issue_count, strides).collect(),
                         )
                     })
                     .collect(),
             ),
-            // A kind of a later minor version: the host built for this one does not know it.
-            _ => ContextValue::Text(""),
-        }
+            // A kind of a later minor version: skipped.
+            _ => return None,
+        })
     }
 }

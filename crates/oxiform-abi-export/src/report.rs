@@ -231,6 +231,10 @@ impl Handle {
                 kind: 0,
                 truncated: 0,
                 issue_size: size_of::<OxIssue>() as u32,
+                segment_size: size_of::<OxPathSegment>() as u32,
+                entry_size: size_of::<OxContextEntry>() as u32,
+                variant_size: size_of::<OxVariant>() as u32,
+                choice_size: size_of::<OxChoiceValue>() as u32,
                 issues: core::ptr::null(),
                 issue_count: 0,
             },
@@ -250,6 +254,10 @@ impl Handle {
             },
             truncated: u32::from(self.report.truncated),
             issue_size: size_of::<OxIssue>() as u32,
+            segment_size: size_of::<OxPathSegment>() as u32,
+            entry_size: size_of::<OxContextEntry>() as u32,
+            variant_size: size_of::<OxVariant>() as u32,
+            choice_size: size_of::<OxChoiceValue>() as u32,
             issues: level.views.as_ptr(),
             issue_count: level.views.len(),
         };
@@ -395,16 +403,10 @@ pub unsafe extern "C" fn report_in_source(report: *mut OxReport, source: OxStr) 
         };
         // SAFETY: the caller guarantees `report` is a live, unshared handle.
         let handle = unsafe { &mut *report.cast::<Handle>() };
-        let report = std::mem::replace(
-            &mut handle.report,
-            Report {
-                kind: ReportKind::Validation,
-                issues: Vec::new(),
-                truncated: false,
-            },
-        );
-        handle.report = report.in_source(source);
-        handle.rebuild();
+        // The new handle is built aside: a panic before the assignment leaves the old one, with
+        // its views, untouched.
+        let rewritten = Handle::new(handle.report.clone().in_source(source));
+        *handle = *rewritten;
         OX_OK
     })
 }
@@ -462,12 +464,12 @@ pub unsafe extern "C" fn report_combine(
             }
             sources.push(source);
         }
-        // Everything is valid: from here on the call cannot fail, and consumes the reports.
+        // Everything is valid. The combined report is built from copies, so that a panic while
+        // building it (which returns OX_INTERNAL) has consumed nothing; the parts are freed only
+        // after the new report exists.
         let reports = parts.iter().map(|part| {
-            // SAFETY: a live handle, checked non-null and distinct from the others, which the
-            // caller hands over: this takes ownership.
-            let handle = unsafe { Box::from_raw(part.report.cast::<Handle>()) };
-            handle.report
+            // SAFETY: a live handle, checked non-null and distinct from the others.
+            unsafe { (*part.report.cast::<Handle>()).report.clone() }
         });
         let combined = Report::combine(
             sources.into_iter().zip(reports),
@@ -477,8 +479,14 @@ pub unsafe extern "C" fn report_combine(
                 usize::try_from(max_errors).unwrap_or(usize::MAX)
             },
         );
+        let combined = Box::into_raw(Handle::new(combined)).cast::<OxReport>();
+        for part in parts {
+            // SAFETY: a live handle the caller hands over on success: this takes ownership and
+            // frees it. The pointers were checked non-null and distinct.
+            drop(unsafe { Box::from_raw(part.report.cast::<Handle>()) });
+        }
         // SAFETY: `out` is writable.
-        unsafe { out.write(Box::into_raw(Handle::new(combined)).cast::<OxReport>()) };
+        unsafe { out.write(combined) };
         OX_OK
     })
 }

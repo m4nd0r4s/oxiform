@@ -703,3 +703,65 @@ fn a_panic_is_returned_as_an_internal_error() {
     assert_eq!(guard(|| panic!("a bug")), OX_INTERNAL);
     assert_eq!(guard(|| OX_OK), OX_OK);
 }
+
+#[test]
+fn a_zero_in_a_limit_is_the_default_of_that_field() {
+    use oxiform_core::limits::Limits;
+    // A host fills in one limit of a zeroed struct: the others are their defaults, not 0.
+    let mut limits = OxLimits::zeroed();
+    limits.max_bytes = 100;
+    let mut raw = OxDecodeOptions::new();
+    raw.limits = &raw const limits;
+    // SAFETY: valid structs that live through the call.
+    let read = unsafe { decode_options(&raw const raw) }.unwrap();
+    assert_eq!(read.limits.max_bytes, 100);
+    assert_eq!(
+        (
+            read.limits.max_depth,
+            read.limits.max_items,
+            read.limits.max_str_len,
+            read.limits.max_int_digits
+        ),
+        (
+            Limits::DEFAULT.max_depth,
+            Limits::DEFAULT.max_items,
+            Limits::DEFAULT.max_str_len,
+            Limits::DEFAULT.max_int_digits
+        )
+    );
+    // All zero is all defaults; u64::MAX removes a limit.
+    let all_zero = OxLimits::zeroed();
+    raw.limits = &raw const all_zero;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { decode_options(&raw const raw) }.unwrap().limits,
+        Limits::DEFAULT
+    );
+    let mut none = OxLimits::zeroed();
+    none.max_items = u64::MAX;
+    raw.limits = &raw const none;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { decode_options(&raw const raw) }
+            .unwrap()
+            .limits
+            .max_items,
+        usize::MAX
+    );
+}
+
+#[test]
+fn a_bad_buffer_is_checked_before_any_work() {
+    let mut storage = [0_u8; 4];
+    let mut buffer = fixed(&mut storage, 5);
+    // SAFETY: valid struct; `len > capacity` is what is being checked.
+    assert_eq!(
+        unsafe { check_buffer(&raw mut buffer) }.unwrap_err().status,
+        OX_INVALID_ARGUMENT
+    );
+    buffer.len = 2;
+    // SAFETY: as above.
+    assert!(unsafe { check_buffer(&raw mut buffer) }.is_ok());
+    // SAFETY: null is refused.
+    assert!(unsafe { check_buffer(core::ptr::null_mut()) }.is_err());
+}

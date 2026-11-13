@@ -4,16 +4,13 @@ use oxiform_abi::{OX_BUFFER, OX_INVALID_ARGUMENT, OxBuffer};
 
 use crate::Error;
 
-/// Appends `bytes` to the host's `buffer`, growing it through its `reserve` callback.
-///
-/// The buffer is touched only when the bytes fit, or after `reserve` succeeded; on any error it is
-/// as it was (but for what `reserve` itself did, which keeps the `len` bytes).
+/// Checks that `buffer` can be appended to: not null, of at least the size of ABI 1.0, with
+/// `len <= capacity`. A call checks it before it does any work, so a bad buffer costs nothing.
 ///
 /// # Safety
 ///
-/// `buffer` must be null (an error) or point to a readable and writable `OxBuffer` whose `data`
-/// points to `capacity` bytes, the first `len` initialized, and `reserve` must keep that contract.
-pub unsafe fn append(buffer: *mut OxBuffer, bytes: &[u8]) -> Result<(), Error> {
+/// As [`append`].
+pub unsafe fn check_buffer(buffer: *mut OxBuffer) -> Result<(), Error> {
     if buffer.is_null() {
         return Err(Error::new(
             OX_INVALID_ARGUMENT,
@@ -21,8 +18,8 @@ pub unsafe fn append(buffer: *mut OxBuffer, bytes: &[u8]) -> Result<(), Error> {
         ));
     }
     // SAFETY: the caller guarantees `buffer` is readable; `struct_size` is its first field. Fields
-    // are read through the raw pointer, never through a reference, because `reserve` below may
-    // change them.
+    // are read through the raw pointer, never through a reference, because `reserve` may change
+    // them.
     let given = unsafe { (&raw const (*buffer).struct_size).read() } as usize;
     if given < OxBuffer::SIZE_V1_0 {
         return Err(Error::new(
@@ -47,6 +44,28 @@ pub unsafe fn append(buffer: *mut OxBuffer, bytes: &[u8]) -> Result<(), Error> {
             format!("buffer.len ({len}) is greater than buffer.capacity ({capacity})"),
         ));
     }
+    Ok(())
+}
+
+/// Appends `bytes` to the host's `buffer`, growing it through its `reserve` callback.
+///
+/// The buffer is touched only when the bytes fit, or after `reserve` succeeded; on any error it is
+/// as it was (but for what `reserve` itself did, which keeps the `len` bytes).
+///
+/// # Safety
+///
+/// `buffer` must be null (an error) or point to a readable and writable `OxBuffer` whose `data`
+/// points to `capacity` bytes, the first `len` initialized, and `reserve` must keep that contract.
+pub unsafe fn append(buffer: *mut OxBuffer, bytes: &[u8]) -> Result<(), Error> {
+    // SAFETY: forwarded from the caller.
+    unsafe { check_buffer(buffer) }?;
+    // SAFETY: `check_buffer` passed, so the fields of ABI 1.0 are readable.
+    let (len, capacity) = unsafe {
+        (
+            (&raw const (*buffer).len).read(),
+            (&raw const (*buffer).capacity).read(),
+        )
+    };
     let needed = len
         .checked_add(bytes.len())
         .ok_or_else(|| Error::new(OX_BUFFER, "the output does not fit in the address space"))?;

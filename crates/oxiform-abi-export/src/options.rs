@@ -87,12 +87,18 @@ pub unsafe fn decode_options(pointer: *const OxDecodeOptions) -> Result<Options,
     } else {
         // SAFETY: the caller guarantees a non-null `limits` is a readable `OxLimits`.
         let raw: OxLimits = unsafe { read_prefixed(raw.limits) }.map_err(too_small("limits"))?;
+        // 0 in a field is the default of that field, as it is for `max_errors`: a host that fills
+        // in one limit of a zeroed struct does not reject every document.
+        let or_default = |value: u64, default: usize| {
+            if value == 0 { default } else { size(value) }
+        };
+        let defaults = Limits::DEFAULT;
         Limits {
-            max_bytes: size(raw.max_bytes),
-            max_depth: size(raw.max_depth).min(Limits::DEPTH_CEILING),
-            max_items: size(raw.max_items),
-            max_str_len: size(raw.max_str_len),
-            max_int_digits: size(raw.max_int_digits),
+            max_bytes: or_default(raw.max_bytes, defaults.max_bytes),
+            max_depth: or_default(raw.max_depth, defaults.max_depth).min(Limits::DEPTH_CEILING),
+            max_items: or_default(raw.max_items, defaults.max_items),
+            max_str_len: or_default(raw.max_str_len, defaults.max_str_len),
+            max_int_digits: or_default(raw.max_int_digits, defaults.max_int_digits),
         }
     };
     Ok(Options {

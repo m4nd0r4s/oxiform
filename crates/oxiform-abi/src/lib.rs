@@ -23,9 +23,9 @@
 //!
 //! | Thing | Who allocates | Who frees | Valid for |
 //! | --- | --- | --- | --- |
-//! | input `data`, `source` strings, options, limits | the host | the host | the call: oxiform never keeps a pointer to them |
+//! | input `data`, `source` strings, options, limits | the host | the host | the call: oxiform never keeps a pointer to them. `data` must not change during the decode (validators run Python): pass owned or immutable bytes |
 //! | the decoded object (`out_value`) | oxiform | the host: it holds one reference and decrements it with the interpreter attached | until released |
-//! | an `OxPlan` | oxiform | the host: `plan_release` once per reference | until the last reference is released; the compiled type stays in the plan cache anyway |
+//! | an `OxPlan` | oxiform | the host: `plan_release` once per reference | until the last reference is released; the compiled type stays in the plan cache anyway. Release plans before the interpreter shuts down: afterwards `plan_release` leaks the handle |
 //! | an `OxReport` and its views | oxiform | the host: `report_free` (or a successful `report_combine`, which consumes it) | until freed; `report_in_source` invalidates the views |
 //! | output bytes | the host (`OxBuffer`) | the host | oxiform appends and never keeps `data`; it grows the buffer only through the host's `reserve` callback, so no memory crosses the allocator of two cdylibs |
 //! | `PyObject*` arguments (`target`, `obj`) | the host | the host | borrowed for the call |
@@ -152,5 +152,117 @@ mod tests {
             }
         });
         assert_eq!(buffer.as_slice(), b"head:body");
+    }
+
+    #[test]
+    fn arrays_are_walked_by_their_strides_and_unknown_kinds_are_skipped() {
+        // What a later minor could return: every struct longer than this host knows, with an
+        // unknown kind of path segment, context value and choice value among the known ones.
+        #[repr(C)]
+        struct Wide<T> {
+            base: T,
+            added_later: [u64; 3],
+        }
+        fn wide<T>(base: T) -> Wide<T> {
+            Wide {
+                base,
+                added_later: [u64::MAX; 3],
+            }
+        }
+        let segment = |kind, index, key: &'static str| OxPathSegment {
+            kind,
+            reserved: 0,
+            index,
+            key: OxStr::from_str(key),
+        };
+        let segments = [
+            wide(segment(OX_SEGMENT_KEY, 0, "a")),
+            wide(segment(99, 0, "from the future")),
+            wide(segment(OX_SEGMENT_INDEX, 7, "")),
+        ];
+        let choices = [
+            wide(OxChoiceValue {
+                kind: OX_CHOICE_INTEGER,
+                reserved: 0,
+                integer: 4,
+                text: OxStr::EMPTY,
+            }),
+            wide(OxChoiceValue {
+                kind: 99,
+                reserved: 0,
+                integer: 0,
+                text: OxStr::EMPTY,
+            }),
+            wide(OxChoiceValue {
+                kind: OX_CHOICE_STRING,
+                reserved: 0,
+                integer: 0,
+                text: OxStr::from_str("s"),
+            }),
+        ];
+        let value = |kind, integer, items: *const core::ffi::c_void, len| OxContextValue {
+            kind,
+            reserved: 0,
+            integer,
+            float: 0.0,
+            text: OxStr::EMPTY,
+            items,
+            len,
+        };
+        let entries = [
+            wide(OxContextEntry {
+                key: OxStr::from_str("n"),
+                value: value(OX_CTX_INTEGER, 5, core::ptr::null(), 0),
+            }),
+            wide(OxContextEntry {
+                key: OxStr::from_str("future"),
+                value: value(99, 0, core::ptr::null(), 0),
+            }),
+            wide(OxContextEntry {
+                key: OxStr::from_str("allowed"),
+                value: value(OX_CTX_VALUES, 0, choices.as_ptr().cast(), choices.len()),
+            }),
+        ];
+        let issue = wide(OxIssue {
+            code: OxStr::from_str("literal"),
+            message: OxStr::from_str("m"),
+            pointer: OxStr::from_str("/a/7"),
+            input: OxStr::EMPTY,
+            has_input: 0,
+            reserved: 0,
+            path: segments.as_ptr().cast(),
+            path_len: segments.len(),
+            context: entries.as_ptr().cast(),
+            context_len: entries.len(),
+        });
+        let raw = OxReportView {
+            struct_size: size_of::<OxReportView>() as u32,
+            kind: OX_REPORT_VALIDATION,
+            truncated: 0,
+            issue_size: size_of::<Wide<OxIssue>>() as u32,
+            segment_size: size_of::<Wide<OxPathSegment>>() as u32,
+            entry_size: size_of::<Wide<OxContextEntry>>() as u32,
+            variant_size: size_of::<Wide<OxVariant>>() as u32,
+            choice_size: size_of::<Wide<OxChoiceValue>>() as u32,
+            issues: core::ptr::from_ref(&issue).cast(),
+            issue_count: 1,
+        };
+        // SAFETY: `raw` describes arrays that live through this test, with the strides given.
+        let view = unsafe { ReportView::from_raw(&raw) };
+        let issue = view.issues().next().unwrap();
+        assert_eq!(
+            issue.path().collect::<Vec<_>>(),
+            [Segment::Key("a"), Segment::Index(7)]
+        );
+        let context: Vec<_> = issue.context().collect();
+        assert_eq!(context.len(), 2);
+        assert_eq!(context[0], ("n", ContextValue::Integer(5)));
+        assert_eq!(
+            context[1],
+            (
+                "allowed",
+                ContextValue::Values(vec![ChoiceValue::Integer(4), ChoiceValue::String("s")])
+            )
+        );
     }
 }
