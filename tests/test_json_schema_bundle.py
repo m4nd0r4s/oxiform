@@ -214,6 +214,10 @@ def test_aliases_are_required_by_any_of_their_names() -> None:
     assert check.is_valid({"client": "x"})
     assert check.is_valid({"customer": "x"})
     assert not check.is_valid({})
+    # The stated difference: both names at once are one field twice for the engine.
+    assert check.is_valid({"customer": "x", "client": "y"})
+    with pytest.raises(ox.ValidationError, match="duplicate key"):
+        ox.json.decode('{"customer": "x", "client": "y"}', Named)
 
 
 def test_a_class_that_holds_a_changed_class_changes_with_it() -> None:

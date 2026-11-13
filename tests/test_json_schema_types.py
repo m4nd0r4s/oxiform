@@ -29,6 +29,7 @@ from schema_support import (
 )
 
 import oxiform as ox
+from oxiform._json_schema import patterns
 
 
 def schema(target: Any, **options: Any) -> Any:
@@ -37,6 +38,9 @@ def schema(target: Any, **options: Any) -> Any:
 
 def bundle(target: Any, **options: Any) -> ox.SchemaBundle:
     return ox.json_schema_bundle([target], ref_template=COMPONENTS, **options)
+
+
+BYTES = {"type": "string", "contentEncoding": "base64", "pattern": patterns.BASE64_TEXT}
 
 
 @pytest.mark.parametrize(
@@ -49,8 +53,8 @@ def bundle(target: Any, **options: Any) -> ox.SchemaBundle:
         (type(None), {"type": "null"}),
         (None, {"type": "null"}),
         (Any, {}),
-        (bytes, {"type": "string", "contentEncoding": "base64"}),
-        (bytearray, {"type": "string", "contentEncoding": "base64"}),
+        (bytes, BYTES),
+        (bytearray, BYTES),
         (datetime.datetime, {"type": "string", "format": "date-time"}),
         (datetime.date, {"type": "string", "format": "date"}),
         (datetime.timedelta, {"type": "string", "format": "duration"}),
@@ -62,12 +66,13 @@ def bundle(target: Any, **options: Any) -> ox.SchemaBundle:
         (pathlib.Path, {"type": "string", "format": "path"}),
         (zoneinfo.ZoneInfo, {"type": "string", "format": "zoneinfo"}),
         (enum.IntFlag("Perm", "R W"), {"type": "integer"}),
+        (tuple[()], {"type": "array", "maxItems": 0}),
         (list, {"type": "array", "items": {}}),
         (dict, {"type": "object", "additionalProperties": {}}),
         (tuple, {"type": "array", "items": {}}),
-        (set, {"type": "array", "items": {}, "uniqueItems": True}),
+        (set, {"type": "array", "items": {}}),
         (list[int], {"type": "array", "items": {"type": "integer"}}),
-        (frozenset[str], {"type": "array", "items": {"type": "string"}, "uniqueItems": True}),
+        (frozenset[str], {"type": "array", "items": {"type": "string"}}),
         (tuple[int, ...], {"type": "array", "items": {"type": "integer"}}),
         (
             tuple[int, str],
@@ -107,7 +112,10 @@ def bundle(target: Any, **options: Any) -> ox.SchemaBundle:
 )
 def test_the_schema_of_each_type(target: Any, expected: dict[str, Any]) -> None:
     for mode in ("validation", "serialization"):
-        assert schema(target, mode=mode) == expected
+        written = schema(target, mode=mode)
+        if mode == "serialization" and target in (set, frozenset[str]):
+            expected = {**expected, "uniqueItems": True}
+        assert written == expected
         check_metaschema(bundle(target, mode=mode))
 
 
@@ -120,7 +128,7 @@ def test_enums_are_definitions_of_their_values() -> None:
 
 
 def test_decimal_reads_a_number_or_a_string_and_writes_a_string() -> None:
-    text = {"type": "string", "format": "decimal"}
+    text = {"type": "string", "format": "decimal", "pattern": patterns.DECIMAL_TEXT}
     assert schema(decimal.Decimal) == {"anyOf": [{"type": "number"}, text]}
     assert schema(decimal.Decimal, mode="serialization") == text
     check = Checker(schema(decimal.Decimal))
@@ -153,7 +161,7 @@ def test_constraints_become_keywords() -> None:
     assert schema(Annotated[int | None, ox.Ge(1)]) == {
         "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
     }
-    assert schema(Annotated[bytes, ox.Len(2)]) == {"type": "string", "contentEncoding": "base64"}
+    assert schema(Annotated[bytes, ox.Len(2)]) == BYTES
 
 
 def test_field_shortcuts_are_constraints() -> None:
@@ -234,9 +242,8 @@ def test_internal_tags_by_tag_field_make_a_discriminated_union() -> None:
         "propertyName": "kind",
         "mapping": {"dog": "#/components/schemas/Dog", "cat": "#/components/schemas/Cat"},
     }
-    assert union["oneOf"][0] == {
-        "allOf": [{"$ref": "#/components/schemas/Dog"}, {"required": ["kind"]}]
-    }
+    # A plain $ref (with the tag required beside it), as the discriminator of OpenAPI wants.
+    assert union["oneOf"][0] == {"$ref": "#/components/schemas/Dog", "required": ["kind"]}
     check = validator(found)
     assert check.is_valid({"kind": "dog", "name": "Rex", "breed": "lab"})
     assert not check.is_valid({"name": "Rex", "breed": "lab"})
