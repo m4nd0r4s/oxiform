@@ -103,7 +103,12 @@ unsafe fn strided<'a, T: 'a>(
     count: usize,
     stride: u32,
 ) -> impl Iterator<Item = &'a T> + use<'a, T> {
-    let usable = count > 0 && stride as usize >= size_of::<T>();
+    // A stride shorter than `T`, or one that would misalign the next element, is refused (no
+    // elements): reading through it would be out of bounds or a misaligned reference.
+    let usable = count > 0
+        && stride as usize >= size_of::<T>()
+        && (stride as usize).is_multiple_of(align_of::<T>())
+        && start.is_aligned();
     (0..if usable { count } else { 0 }).map(move |index| {
         // SAFETY: the caller guarantees `count` elements `stride` bytes apart at `start`.
         unsafe { &*start.cast::<u8>().add(index * stride as usize).cast::<T>() }
