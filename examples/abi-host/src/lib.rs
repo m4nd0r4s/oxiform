@@ -17,12 +17,13 @@ mod buffer;
 mod legacy;
 mod problem;
 
+use std::ptr::NonNull;
 use std::sync::OnceLock;
 
 use oxiform_abi::{
     Api, DecodeOptions, Decoded, EncodeOptions, Mode, OX_INVALID, OX_OK, OxBuffer, OxDecodeOptions,
-    OxEncodeOptions, OxLimits, OxPair, OxPairsOptions, OxStr, PairsOptions, Report, Status,
-    Unknown, VecBuffer,
+    OxEncodeOptions, OxLimits, OxPair, OxPairsOptions, OxPyObject, OxStr, PairsOptions, Report,
+    Status, Unknown, VecBuffer,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -98,17 +99,27 @@ fn bytes_of<'a>(data: &'a Bound<'_, PyAny>) -> PyResult<&'a [u8]> {
     Ok(data.cast::<PyBytes>()?.as_bytes())
 }
 
+/// The validation context as the table takes it: a borrowed `PyObject*`, valid while the `Bound`
+/// the host got it as is (every caller holds it for the call).
+fn context_of(context: Option<&Bound<'_, PyAny>>) -> Option<NonNull<OxPyObject>> {
+    context
+        .filter(|object| !object.is_none())
+        .and_then(|object| NonNull::new(object.as_ptr().cast()))
+}
+
 fn decode_options(
     mode: &str,
     max_errors: u64,
     limits: Option<&Bound<'_, PyDict>>,
     unknown: &str,
+    context: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<DecodeOptions> {
     Ok(DecodeOptions {
         mode: mode_of(mode)?,
         max_errors,
         limits: limits_of(limits)?,
         unknown: unknown_of(unknown)?,
+        context: context_of(context),
     })
 }
 
@@ -139,12 +150,14 @@ fn pairs_options(
     max_errors: u64,
     limits: Option<&Bound<'_, PyDict>>,
     unknown: &str,
+    context: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PairsOptions> {
     Ok(PairsOptions {
         case_insensitive,
         max_errors,
         limits: limits_of(limits)?,
         unknown: unknown_of(unknown)?,
+        context: context_of(context),
     })
 }
 
@@ -175,7 +188,7 @@ fn finish_pairs<'py>(
 impl Plan {
     /// Reads `data` (bytes) as the type of this plan. Invalid input raises `HostProblem`, whose
     /// `problem` is the RFC 9457 object the host built from the issues.
-    #[pyo3(signature = (data, *, mode = "strict", max_errors = 0, limits = None, unknown = "model", source = None))]
+    #[pyo3(signature = (data, *, mode = "strict", max_errors = 0, limits = None, unknown = "model", source = None, context = None))]
     #[allow(clippy::too_many_arguments)]
     fn decode<'py>(
         &self,
@@ -186,8 +199,9 @@ impl Plan {
         limits: Option<&Bound<'py, PyDict>>,
         unknown: &str,
         source: Option<&str>,
+        context: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = decode_options(mode, max_errors, limits, unknown)?;
+        let options = decode_options(mode, max_errors, limits, unknown, context)?;
         match decode_through_table(py, &self.plan, bytes_of(data)?, &options)? {
             Ok(value) => Ok(value),
             Err(mut report) => {
@@ -305,7 +319,8 @@ impl Plan {
 
     /// Reads a query string or a form body (bytes) as the model of this plan, in lax mode
     /// (`decode_pairs` of ABI 1.1). Invalid input raises `HostProblem`.
-    #[pyo3(signature = (data, *, max_errors = 0, limits = None, unknown = "model", source = None))]
+    #[pyo3(signature = (data, *, max_errors = 0, limits = None, unknown = "model", source = None, context = None))]
+    #[allow(clippy::too_many_arguments)]
     fn decode_urlencoded<'py>(
         &self,
         py: Python<'py>,
@@ -314,8 +329,9 @@ impl Plan {
         limits: Option<&Bound<'py, PyDict>>,
         unknown: &str,
         source: Option<&str>,
+        context: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = pairs_options(false, max_errors, limits, unknown)?;
+        let options = pairs_options(false, max_errors, limits, unknown, context)?;
         let bytes = bytes_of(data)?;
         // SAFETY: this thread is attached (PyO3 gave us `py`).
         let decoded = unsafe { api().decode_urlencoded(&self.plan, bytes, &options) };
@@ -324,7 +340,7 @@ impl Plan {
 
     /// Reads `[(name, value)]` of `str` as the model of this plan, in lax mode (`decode_pairs` of
     /// ABI 1.1): headers and cookies. Invalid input raises `HostProblem`.
-    #[pyo3(signature = (pairs, *, case_insensitive = false, max_errors = 0, limits = None, unknown = "model", source = None))]
+    #[pyo3(signature = (pairs, *, case_insensitive = false, max_errors = 0, limits = None, unknown = "model", source = None, context = None))]
     #[allow(clippy::too_many_arguments)]
     fn decode_pairs<'py>(
         &self,
@@ -335,8 +351,9 @@ impl Plan {
         limits: Option<&Bound<'py, PyDict>>,
         unknown: &str,
         source: Option<&str>,
+        context: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options = pairs_options(case_insensitive, max_errors, limits, unknown)?;
+        let options = pairs_options(case_insensitive, max_errors, limits, unknown, context)?;
         let views: Vec<(&str, &str)> = pairs
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -350,7 +367,7 @@ impl Plan {
     /// error)`. `pairs` is `[(name, value)]` of bytes; `struct_size` and `extra` change the size the
     /// options claim (`extra` bytes of fields of a later minor follow, set to ones); `null_pairs`
     /// and `null_data` pass a NULL pointer for the source that is read.
-    #[pyo3(signature = (*, data = None, pairs = None, format = 2, flags = 0, max_errors = 0, unknown = 0, struct_size = None, extra = 0, null_options = false, null_source = false))]
+    #[pyo3(signature = (*, data = None, pairs = None, format = 2, flags = 0, max_errors = 0, unknown = 0, struct_size = None, extra = 0, null_options = false, null_source = false, context = None))]
     #[allow(clippy::too_many_arguments)]
     fn decode_pairs_raw<'py>(
         &self,
@@ -365,11 +382,13 @@ impl Plan {
         extra: usize,
         null_options: bool,
         null_source: bool,
+        context: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyTuple>> {
         let mut raw = OxPairsOptions::new();
         raw.flags = flags;
         raw.max_errors = max_errors;
         raw.unknown = unknown;
+        raw.context = context.map_or(core::ptr::null_mut(), |object| object.as_ptr().cast());
         let total = size_of::<OxPairsOptions>() + extra;
         raw.struct_size = struct_size.unwrap_or(total as u32);
         let mut storage = vec![u64::MAX; total.div_ceil(8)];
@@ -524,14 +543,16 @@ fn decode_null_plan(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<(i32, P
 /// Decodes the parts of one request, each with its own plan, mode and source, and builds one
 /// problem when any of them is invalid (OX-4 through the ABI). `parts` is
 /// `[(source, plan, data, mode)]` in order of priority; `mode` is `strict` or `lax` for a JSON
-/// document and `urlencoded` for a query string or form read with `decode_pairs`.
+/// document and `urlencoded` for a query string or form read with `decode_pairs`. `context` is
+/// the validation context of the whole request, handed to the validators of every part.
 #[pyfunction]
-#[pyo3(signature = (parts, *, max_errors = 100, unknown = "model"))]
+#[pyo3(signature = (parts, *, max_errors = 100, unknown = "model", context = None))]
 fn decode_request<'py>(
     py: Python<'py>,
     parts: &Bound<'py, PyList>,
     max_errors: u64,
     unknown: &str,
+    context: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let values = PyDict::new(py);
     let mut sources: Vec<String> = Vec::new();
@@ -541,7 +562,7 @@ fn decode_request<'py>(
             part.extract()?;
         // `urlencoded` is a query string or a form, read as a model by `decode_pairs`.
         let decoded = if mode == "urlencoded" {
-            let options = pairs_options(false, max_errors, None, unknown)?;
+            let options = pairs_options(false, max_errors, None, unknown, context)?;
             // SAFETY: this thread is attached (PyO3 gave us `py`).
             let decoded =
                 unsafe { api().decode_urlencoded(&plan.get().plan, bytes_of(&data)?, &options) };
@@ -556,7 +577,7 @@ fn decode_request<'py>(
                 Err(_) => Err(PyErr::fetch(py)),
             }
         } else {
-            let options = decode_options(&mode, max_errors, None, unknown)?;
+            let options = decode_options(&mode, max_errors, None, unknown, context)?;
             decode_through_table(py, &plan.get().plan, bytes_of(&data)?, &options)
         };
         match decoded? {

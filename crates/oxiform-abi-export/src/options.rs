@@ -3,8 +3,8 @@
 use oxiform_abi::{
     OX_ENCODE_INDENT, OX_ENCODE_SORT_KEYS, OX_INVALID_ARGUMENT, OX_MODE_LAX, OX_MODE_STRICT,
     OX_PAIRS_CASE_INSENSITIVE, OX_UNKNOWN_FORBID, OX_UNKNOWN_IGNORE, OX_UNKNOWN_MODEL,
-    OX_UNSUPPORTED, OxDecodeOptions, OxEncodeOptions, OxLimits, OxPairsOptions, SizePrefixed,
-    TooSmall, read_prefixed,
+    OX_UNSUPPORTED, OxDecodeOptions, OxEncodeOptions, OxLimits, OxPairsOptions, OxPyObject,
+    SizePrefixed, TooSmall, read_prefixed,
 };
 use oxiform_core::description::UnknownFields;
 use oxiform_core::limits::Limits;
@@ -32,15 +32,27 @@ fn size(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
 
+/// The options of a decode call, and the validation context the host passed with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeParams {
+    pub options: Options,
+    /// The borrowed `PyObject*` of the validation context (ABI 1.2), or null for none. It is
+    /// never dereferenced here: the engine hands it to the validators that ask for it.
+    pub context: *mut OxPyObject,
+}
+
 /// The options of a decode call. A null pointer is the defaults.
 ///
 /// # Safety
 ///
 /// `pointer` must be null, or point to a readable `OxDecodeOptions` (as much of it as its
 /// `struct_size` says) and, when its `limits` is not null, to a readable `OxLimits`.
-pub unsafe fn decode_options(pointer: *const OxDecodeOptions) -> Result<Options, Error> {
+pub unsafe fn decode_params(pointer: *const OxDecodeOptions) -> Result<DecodeParams, Error> {
     if pointer.is_null() {
-        return Ok(Options::default());
+        return Ok(DecodeParams {
+            options: Options::default(),
+            context: core::ptr::null_mut(),
+        });
     }
     // SAFETY: the caller guarantees `pointer` is readable as `struct_size` bytes.
     let raw = unsafe { read_prefixed(pointer) }.map_err(too_small::<OxDecodeOptions>("options"))?;
@@ -48,17 +60,10 @@ pub unsafe fn decode_options(pointer: *const OxDecodeOptions) -> Result<Options,
         return Err(Error::new(
             OX_UNSUPPORTED,
             format!(
-                "options.flags is {:#x} but this oxiform defines no flags in ABI 1.0; clear it, or \
+                "options.flags is {:#x} but this oxiform defines no flags in ABI 1.x; clear it, or \
                  upgrade oxiform if you were built against a later minor version",
                 raw.flags
             ),
-        ));
-    }
-    if !raw.context.is_null() {
-        return Err(Error::new(
-            OX_UNSUPPORTED,
-            "options.context is reserved (ox.Context, OX-11) and this oxiform does not read it \
-             yet; pass NULL, or upgrade oxiform to a release that supports the validation context",
         ));
     }
     let mode = match raw.mode {
@@ -71,12 +76,15 @@ pub unsafe fn decode_options(pointer: *const OxDecodeOptions) -> Result<Options,
             ));
         }
     };
-    Ok(Options {
-        mode,
-        // SAFETY: the caller guarantees a non-null `limits` is a readable `OxLimits`.
-        limits: unsafe { limits_of(raw.limits) }?,
-        max_errors: max_errors_of(raw.max_errors),
-        unknown: unknown_of(raw.unknown)?,
+    Ok(DecodeParams {
+        options: Options {
+            mode,
+            // SAFETY: the caller guarantees a non-null `limits` is a readable `OxLimits`.
+            limits: unsafe { limits_of(raw.limits) }?,
+            max_errors: max_errors_of(raw.max_errors),
+            unknown: unknown_of(raw.unknown)?,
+        },
+        context: raw.context,
     })
 }
 
@@ -137,6 +145,8 @@ unsafe fn limits_of(pointer: *const OxLimits) -> Result<Limits, Error> {
 pub struct PairsParams {
     pub options: Options,
     pub case_insensitive: bool,
+    /// The borrowed `PyObject*` of the validation context (ABI 1.2), or null for none.
+    pub context: *mut OxPyObject,
 }
 
 /// The options of a `decode_pairs` call (ABI 1.1). A null pointer is the defaults.
@@ -154,6 +164,7 @@ pub unsafe fn pairs_options(pointer: *const OxPairsOptions) -> Result<PairsParam
         return Ok(PairsParams {
             options: lax,
             case_insensitive: false,
+            context: core::ptr::null_mut(),
         });
     }
     // SAFETY: the caller guarantees `pointer` is readable as `struct_size` bytes.
@@ -177,6 +188,7 @@ pub unsafe fn pairs_options(pointer: *const OxPairsOptions) -> Result<PairsParam
             unknown: unknown_of(raw.unknown)?,
         },
         case_insensitive: raw.flags & OX_PAIRS_CASE_INSENSITIVE != 0,
+        context: raw.context,
     })
 }
 

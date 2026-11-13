@@ -70,6 +70,10 @@ pub struct DecodeOptions {
     /// `None`: the default limits.
     pub limits: Option<OxLimits>,
     pub unknown: Unknown,
+    /// The validation context (ABI 1.2, section 4.3 of the specification): a borrowed `PyObject*`
+    /// that oxiform hands, as it is, to the validators that ask for one. `None` is no context. The
+    /// caller keeps the object alive for the call.
+    pub context: Option<NonNull<OxPyObject>>,
 }
 
 /// The options of a `decode_pairs` call (ABI 1.1). Pairs are always read in lax mode.
@@ -82,6 +86,8 @@ pub struct PairsOptions {
     /// `None`: the default limits.
     pub limits: Option<OxLimits>,
     pub unknown: Unknown,
+    /// The validation context (ABI 1.2), as in [`DecodeOptions::context`].
+    pub context: Option<NonNull<OxPyObject>>,
 }
 
 /// The options of an encode call.
@@ -184,6 +190,9 @@ impl Api {
         };
         raw.max_errors = options.max_errors;
         raw.unknown = unknown_value(options.unknown);
+        raw.context = options
+            .context
+            .map_or(core::ptr::null_mut(), NonNull::as_ptr);
         raw.limits = limits
             .as_ref()
             .map_or(core::ptr::null(), core::ptr::from_ref);
@@ -265,6 +274,9 @@ impl Api {
         }
         raw.max_errors = options.max_errors;
         raw.unknown = unknown_value(options.unknown);
+        raw.context = options
+            .context
+            .map_or(core::ptr::null_mut(), NonNull::as_ptr);
         raw.limits = limits
             .as_ref()
             .map_or(core::ptr::null(), core::ptr::from_ref);

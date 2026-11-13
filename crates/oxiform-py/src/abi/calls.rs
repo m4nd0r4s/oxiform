@@ -7,7 +7,7 @@ use oxiform_abi::{
     OxEncodeOptions, OxPair, OxPairsOptions, OxPlan, OxPyObject, OxReport,
 };
 use oxiform_abi_export::{
-    Error, append, check_buffer, decode_options, encode_options, into_report_pointer, pairs_options,
+    Error, append, check_buffer, decode_params, encode_options, into_report_pointer, pairs_options,
 };
 use oxiform_core::executor::Failure;
 use pyo3::exceptions::{PyBufferError, PyNotImplementedError, PyRuntimeError, PyValueError};
@@ -37,6 +37,25 @@ pub(super) fn attached(call: impl FnOnce(Python<'_>) -> i32) -> i32 {
         });
         OX_INTERNAL
     })
+}
+
+/// The validation context a host passed: a new reference to the borrowed `PyObject*`, or `None`
+/// for null.
+///
+/// # Safety
+///
+/// A non-null `context` must be a valid `PyObject*` that stays alive for the call, and the thread
+/// must be attached.
+unsafe fn borrowed_context<'py>(
+    py: Python<'py>,
+    context: *mut OxPyObject,
+) -> Option<Bound<'py, PyAny>> {
+    if context.is_null() {
+        None
+    } else {
+        // SAFETY: forwarded from the caller.
+        Some(unsafe { Bound::from_borrowed_ptr(py, context.cast()) })
+    }
 }
 
 /// Sets `error` as the exception of the thread and returns `status`.
@@ -119,8 +138,8 @@ pub(super) unsafe extern "C" fn decode(
             );
         }
         // SAFETY: the caller guarantees `options` is null or readable as its `struct_size` says.
-        let options = match unsafe { decode_options(options) } {
-            Ok(options) => options,
+        let params = match unsafe { decode_params(options) } {
+            Ok(params) => params,
             Err(error) => return raise_error(py, error),
         };
         let input: &[u8] = if len == 0 {
@@ -130,7 +149,10 @@ pub(super) unsafe extern "C" fn decode(
             // during the call.
             unsafe { core::slice::from_raw_parts(data, len) }
         };
-        match decode_bytes(py, input, &plan.compiled, &options) {
+        // SAFETY: the caller guarantees a non-null context is a `PyObject*` that stays alive
+        // during the call, and the thread is attached.
+        let context = unsafe { borrowed_context(py, params.context) };
+        match decode_bytes(py, input, &plan.compiled, &params.options, context) {
             Ok(value) => {
                 // SAFETY: `out_value` is writable; `into_ptr` gives the reference the host owns.
                 unsafe { out_value.write(value.into_ptr().cast::<OxPyObject>()) };
@@ -293,6 +315,9 @@ pub(super) unsafe extern "C" fn decode_pairs(
             Ok(params) => params,
             Err(error) => return raise_error(py, error),
         };
+        // SAFETY: the caller guarantees a non-null context is a `PyObject*` that stays alive
+        // during the call, and the thread is attached.
+        let context = unsafe { borrowed_context(py, params.context) };
         let outcome = if urlencoded {
             let input: &[u8] = if len == 0 {
                 &[]
@@ -306,6 +331,7 @@ pub(super) unsafe extern "C" fn decode_pairs(
                 &plan.compiled,
                 &params.options,
                 params.case_insensitive,
+                context,
             )
         } else {
             let raw: &[OxPair] = if pair_count == 0 {
@@ -335,6 +361,7 @@ pub(super) unsafe extern "C" fn decode_pairs(
                 &plan.compiled,
                 &params.options,
                 params.case_insensitive,
+                context,
             )
         };
         match outcome {
