@@ -132,13 +132,27 @@ def _seed_value(value: object, field: FieldSchema) -> object:
 def unencodable(tree: Tree, prefix: tuple[str, ...] = ()) -> tuple[tuple[str, ...], Leaf] | None:
     """The first value of the tree that holds text with bytes that are not UTF-8, where it is."""
     for name, node in tree.items():
-        path = (*prefix, name.removeprefix(UNKNOWN))
+        key = name.removeprefix(UNKNOWN)
+        shown = ascii(key) if _bad_text(key) else key  # a key is not secret, so it may be shown
+        path = (*prefix, shown)
         if isinstance(node, dict):
             found = unencodable(cast("Tree", node), path)
             if found is not None:
                 return found
-        elif _bad_text(plain(cast("Leaf", node).value)):
+            if shown != key:  # the key is the fault: point at the first value under it
+                leaf = _first_leaf(cast("Tree", node))
+                if leaf is not None:
+                    return path, leaf
+        elif shown != key or _bad_text(plain(cast("Leaf", node).value)):
             return path, cast("Leaf", node)
+    return None
+
+
+def _first_leaf(tree: Tree) -> Leaf | None:
+    for node in tree.values():
+        found = _first_leaf(cast("Tree", node)) if isinstance(node, dict) else node
+        if found is not None:
+            return cast("Leaf", found)
     return None
 
 

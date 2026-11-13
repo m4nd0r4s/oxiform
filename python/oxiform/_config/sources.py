@@ -114,9 +114,20 @@ class Source(ABC):
 # -- documents (TOML and JSON) and mappings ------------------------------------------------------
 
 
+def _printable(part: str) -> str:
+    """``part``, or its escaped form when it holds bytes that are not UTF-8: a key is not a
+    secret, but a message that cannot be printed helps nobody."""
+    try:
+        part.encode("utf-8")
+    except UnicodeEncodeError:
+        return ascii(part)
+    return part
+
+
 def _dotted(parts: tuple[str, ...]) -> str:
+    shown = [_printable(part) for part in parts]
     return ".".join(
-        part if part.replace("_", "").replace("-", "").isalnum() else f'"{part}"' for part in parts
+        part if part.replace("_", "").replace("-", "").isalnum() else f'"{part}"' for part in shown
     )
 
 
@@ -291,9 +302,19 @@ def _parse_toml(
     return data, key_lines(text), None
 
 
+_GRAMMAR = frozenset({"=", "[", "]", "[[", "]]", "{", "}", ".", ",", ":", "#", '"', "'"})
+"""What a reader quotes that is the syntax of TOML and not the input: a single such character
+says nothing about a value."""
+
+
 def _redacted(reason: str) -> str:
-    """A reader's reason without anything it quotes from the input."""
-    return re.sub(r"'[^']*'|\"[^\"]*\"", "'...'", reason)
+    """A reader's reason without anything it quotes from the input, except the punctuation of
+    the grammar (``Expected '='``)."""
+
+    def hide(quoted: re.Match[str]) -> str:
+        return quoted.group() if quoted.group()[1:-1] in _GRAMMAR else "'...'"
+
+    return re.sub(r"'[^']*'|\"[^\"]*\"", hide, reason)
 
 
 def _toml_position(detail: str) -> tuple[int, int] | None:
@@ -468,7 +489,7 @@ class _Mapping(Source):
         reading = Reading()
 
         def locate(written: tuple[str, ...]) -> tuple[str, int | None]:
-            return ".".join(written), None
+            return ".".join(_printable(part) for part in written), None
 
         layer = Layer(self.name, "mapping")
         walker = _Walker(self.name, False, locate, reading.problems)

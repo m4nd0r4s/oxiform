@@ -643,7 +643,7 @@ def test_sources_must_be_a_list_of_sources() -> None:
         cfg.load(App, "app.toml")  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
     with pytest.raises(TypeError, match="sources is a list of sources, not int"):
         cfg.load(App, 3)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-    with pytest.raises(TypeError, match="'app.toml', which is not a source"):
+    with pytest.raises(TypeError, match="sources holds a str, which is not a source"):
         cfg.load(App, ["app.toml"])  # type: ignore[list-item]  # pyright: ignore[reportArgumentType]
     assert cfg.load(Server, []) == Server()
     assert cfg.load(Server, ()) == Server()
@@ -832,8 +832,67 @@ def test_a_union_of_a_number_and_a_literal_says_what_it_accepts() -> None:
 
     assert message(W_WORKERS="abc").startswith("expected an integer or 'auto' (from env W_WORKERS)")
     assert message(W_WORKERS="4.5").startswith("expected an integer or 'auto'")
-    assert message(W_MODE="abc").startswith(
-        "expected an integer or a number or one of 'fast', 'slow'"
-    )
+    assert message(W_MODE="abc").startswith("expected a number or one of 'fast', 'slow'")
     assert cfg.load(Workers, [cfg.env(environ={"W_WORKERS": "4"})]).workers == 4
     assert cfg.load(Workers, [cfg.env(environ={"W_WORKERS": "auto"})]).workers == "auto"
+
+
+def test_a_source_that_is_not_one_never_shows_what_it_holds() -> None:
+    with pytest.raises(TypeError) as caught:
+        cfg.load(App, [{"key": "S3CR3T"}])  # type: ignore[list-item]  # pyright: ignore[reportArgumentType]
+    message = str(caught.value)
+    assert "S3CR3T" not in message + repr(caught.value.args)
+    assert "sources holds a dict, which is not a source" in message
+    assert "wrap a dict in cfg.mapping(...)" in message
+
+
+def test_a_failed_load_leaves_nothing_alive_for_the_garbage_collector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gc
+    import weakref
+
+    from oxiform._config.merge import merge as real
+
+    class Tracked(dict[str, Any]):
+        """The merged tree, which holds every value of every source."""
+
+    seen: list[weakref.ref[Tracked]] = []
+
+    def merge(layers: Any) -> Any:
+        tree = Tracked(real(layers))
+        seen.append(weakref.ref(tree))
+        return tree
+
+    monkeypatch.setattr("oxiform._config.load.merge", merge)
+    cases: list[list[cfg.Source]] = [
+        [cfg.mapping({"server": {"port": 0}})],  # the engine rejects a value
+        [cfg.mapping({"db": {"url": "a\udcffb"}})],  # a value that has no JSON form
+        [cfg.mapping({"debug": True}), cfg.mapping({"nope": 1})],  # an unknown key
+    ]
+    gc.collect()
+    gc.disable()
+    try:
+        for sources in cases:
+            seen.clear()
+            with pytest.raises(ox.ValidationError):
+                cfg.load(App, sources)
+            assert len(seen) == 1
+            assert seen[0]() is None, "the merged tree is still alive after a failed load"
+    finally:
+        gc.enable()
+
+
+def test_a_mapping_key_that_is_not_utf8_is_located_to_its_source() -> None:
+    data: dict[str, object] = {"db": {"url": "u", "pa\udcffss": "x"}}
+    with pytest.raises(ox.DecodeError) as caught:
+        cfg.load(App, [cfg.mapping(data, name="cli")])
+    (problem,) = caught.value.errors()
+    assert caught.value.unreadable_sources() == ["cli"]
+    assert "db.'pa\\udcffss' in cli db.'pa\\udcffss' cannot be used" in problem["message"]
+    assert problem["ctx"]["key"] == "db.'pa\\udcffss'"
+    problem["message"].encode("utf-8")  # the message itself is printable text
+    top: dict[str, object] = {"\udcff": 1}
+    with pytest.raises(ox.DecodeError) as caught:
+        cfg.load(App, [cfg.mapping(top)])
+    assert caught.value.unreadable_sources() == ["mapping"]

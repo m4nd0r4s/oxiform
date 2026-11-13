@@ -760,3 +760,18 @@ def test_a_mapping_cannot_take_a_name_that_already_means_something() -> None:
         cfg.mapping({}, name="env")
     with pytest.raises(ValueError, match="name 'default' is how errors and origins call"):
         cfg.mapping({}, name="default")
+
+
+def test_a_toml_reason_keeps_the_punctuation_of_the_grammar_and_hides_the_rest(
+    tmp_path: Path,
+) -> None:
+    missing_equals = write(tmp_path / "a.toml", "key S3CR3T\n")
+    message = only_problem([cfg.file(missing_equals)])["message"]
+    assert "Expected '=' after a key" in message
+    assert "S3CR3T" not in message
+    open_table = write(tmp_path / "b.toml", "[S3CR3T\n")
+    message = only_problem([cfg.file(open_table)])["message"]
+    assert "Expected ']'" in message
+    assert "S3CR3T" not in message
+    stray = write(tmp_path / "c.toml", 'a = "x" S3CR3T\n')
+    assert "S3CR3T" not in only_problem([cfg.file(stray)])["message"]

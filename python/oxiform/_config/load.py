@@ -82,7 +82,9 @@ def _prepare(
     try:
         document = json_encode(to_wire(tree, schema))
     except (EncodeError, UnicodeEncodeError) as error:
-        unwritable = error
+        # No traceback: it would point at this frame, which holds the failure, and the cycle
+        # would keep the layers and the tree alive until the next collection.
+        unwritable = error.with_traceback(None)
     if unwritable is not None:
         pointer = unwritable.pointer if isinstance(unwritable, EncodeError) else None
         return _Outcome(error=_unwritable(pointer, tree, schema, cls, max_errors))
@@ -93,7 +95,7 @@ def _prepare(
             "object", json_decode(document, cls, mode="lax", max_errors=max_errors, limits=limits)
         )
     except ValidationError as error:
-        failure = error
+        failure = error.with_traceback(None)
     if failure is not None or unknown:
         located = _located(failure, unknown, tree, context, chosen, kinds, max_errors)
         return _Outcome(error=located)
@@ -113,8 +115,9 @@ def _sources(sources: object) -> tuple[Source, ...]:
     for item in chosen:
         if not isinstance(item, Source):
             raise TypeError(
-                f"sources holds {item!r}, which is not a source; make one with cfg.file, "
-                "cfg.pyproject, cfg.dotenv, cfg.env or cfg.mapping"
+                f"sources holds a {type(item).__name__}, which is not a source; make one with "
+                "cfg.file, cfg.pyproject, cfg.dotenv or cfg.env, and wrap a dict in "
+                "cfg.mapping(...)"
             )
     return cast("tuple[Source, ...]", chosen)
 
