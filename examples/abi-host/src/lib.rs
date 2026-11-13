@@ -62,12 +62,8 @@ fn unknown_of(unknown: &str) -> PyResult<Unknown> {
     }
 }
 
-/// `limits` of a call: a dict of the fields to change, over the defaults of the installed oxiform.
-fn limits_of(limits: Option<&Bound<'_, PyDict>>) -> PyResult<Option<OxLimits>> {
-    let Some(changes) = limits else {
-        return Ok(None);
-    };
-    let mut raw = api().limits_default();
+/// Sets the limits `changes` names on `raw`.
+fn apply_limits(raw: &mut OxLimits, changes: &Bound<'_, PyDict>) -> PyResult<()> {
     for (key, value) in changes.iter() {
         let value: u64 = value.extract()?;
         match key.extract::<String>()?.as_str() {
@@ -83,6 +79,16 @@ fn limits_of(limits: Option<&Bound<'_, PyDict>>) -> PyResult<Option<OxLimits>> {
             }
         }
     }
+    Ok(())
+}
+
+/// `limits` of a call: a dict of the fields to change, over the defaults of the installed oxiform.
+fn limits_of(limits: Option<&Bound<'_, PyDict>>) -> PyResult<Option<OxLimits>> {
+    let Some(changes) = limits else {
+        return Ok(None);
+    };
+    let mut raw = api().limits_default();
+    apply_limits(&mut raw, changes)?;
     Ok(Some(raw))
 }
 
@@ -160,7 +166,7 @@ impl Plan {
     ///
     /// `struct_size` and `extra` change the size the options claim (`extra` bytes of "fields of a
     /// later minor version" follow the struct, set to ones); `flags` and `context` are set as given.
-    #[pyo3(signature = (data, *, mode = 0, max_errors = 0, unknown = 0, flags = 0, context = None, struct_size = None, extra = 0, limits_struct_size = None, format = 1, null_data = false))]
+    #[pyo3(signature = (data, *, mode = 0, max_errors = 0, unknown = 0, flags = 0, context = None, struct_size = None, extra = 0, limits_struct_size = None, format = 1, null_data = false, zeroed_limits = None))]
     #[allow(clippy::too_many_arguments)]
     fn decode_raw<'py>(
         &self,
@@ -176,9 +182,18 @@ impl Plan {
         limits_struct_size: Option<u32>,
         format: u32,
         null_data: bool,
+        zeroed_limits: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyTuple>> {
         let data = bytes_of(data)?;
-        let mut limits = api().limits_default();
+        // `zeroed_limits` is a limits struct a C host filled in field by field from zero.
+        let mut limits = if zeroed_limits.is_some() {
+            OxLimits::zeroed()
+        } else {
+            api().limits_default()
+        };
+        if let Some(changes) = zeroed_limits {
+            apply_limits(&mut limits, changes)?;
+        }
         if let Some(size) = limits_struct_size {
             limits.struct_size = size;
         }
@@ -187,7 +202,7 @@ impl Plan {
         raw.max_errors = max_errors;
         raw.unknown = unknown;
         raw.flags = flags;
-        raw.limits = if limits_struct_size.is_some() {
+        raw.limits = if limits_struct_size.is_some() || zeroed_limits.is_some() {
             &raw const limits
         } else {
             core::ptr::null()

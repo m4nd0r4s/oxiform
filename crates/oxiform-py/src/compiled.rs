@@ -31,6 +31,11 @@ static PLANS: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
 static COMPILATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// The compiled form of `target`, compiling it on first use.
+///
+/// One plan per type for the life of the process: the cache never evicts, and when threads race to
+/// compile the same type (free-threaded builds) the first to insert wins and every caller gets its
+/// plan (the others' work is dropped). A target that is not hashable (an `Annotated` with
+/// unhashable metadata) is not cached and compiles at every call: a host keeps the handle.
 pub(crate) fn compiled_for(target: &Bound<'_, PyAny>) -> PyResult<Arc<CompiledType>> {
     let py = target.py();
     let cache = PLANS.get_or_init(py, || PyDict::new(py).unbind()).bind(py);
@@ -49,8 +54,10 @@ pub(crate) fn compiled_for(target: &Bound<'_, PyAny>) -> PyResult<Arc<CompiledTy
             compiled: compiled.clone(),
         },
     )?;
-    cache.set_item(target, handle)?;
-    Ok(compiled)
+    // `setdefault` is atomic: of two threads that compiled the same type, both get the plan of
+    // the first to insert.
+    let winner = cache.call_method1("setdefault", (target, handle))?;
+    Ok(winner.cast::<PlanHandle>()?.get().compiled.clone())
 }
 
 /// Compiles the plans of `types` now instead of on first use.
@@ -82,4 +89,11 @@ fn compile_target(target: &Bound<'_, PyAny>) -> PyResult<CompiledType> {
 pub(crate) fn _plan_stats(py: Python<'_>) -> (u64, usize) {
     let cached = PLANS.get(py).map_or(0, |cache| cache.bind(py).len());
     (COMPILATIONS.load(Ordering::Relaxed), cached)
+}
+
+/// The address of the cached compiled type of `target`: two calls that return the same number
+/// share one plan, which a test of racing threads checks.
+#[pyfunction]
+pub(crate) fn _plan_id(target: &Bound<'_, PyAny>) -> PyResult<usize> {
+    Ok(Arc::as_ptr(&compiled_for(target)?) as usize)
 }

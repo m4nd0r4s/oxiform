@@ -19,5 +19,8 @@ oxiform-core.workspace = true
 oxiform-formats.workspace = true
 pyo3.workspace = true
 
+[build-dependencies]
+pyo3-build-config.workspace = true
+
 [lints]
 workspace = true

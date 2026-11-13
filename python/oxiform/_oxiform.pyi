@@ -14,6 +14,9 @@ _ABI_MAJORS: tuple[int, ...]
 _ABI_V1: object
 """The capsule (a `PyCapsule`) of the function table of ABI 1, for native extensions."""
 
+def _plan_id(target: object) -> int:
+    """The address of the cached compiled type of `target`: one number per type."""
+
 def _plan_stats() -> tuple[int, int]:
     """`(types compiled in this process, types in the plan cache)`: a host that asks for the plan
     of a known type compiles nothing."""

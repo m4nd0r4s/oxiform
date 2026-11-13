@@ -6,7 +6,9 @@ use oxiform_abi::{
     OX_PYTHON_ERROR, OX_UNSUPPORTED, OxBuffer, OxDecodeOptions, OxEncodeOptions, OxPlan,
     OxPyObject, OxReport,
 };
-use oxiform_abi_export::{Error, append, decode_options, encode_options, into_report_pointer};
+use oxiform_abi_export::{
+    Error, append, check_buffer, decode_options, encode_options, into_report_pointer,
+};
 use oxiform_core::executor::Failure;
 use pyo3::exceptions::{PyBufferError, PyNotImplementedError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -168,12 +170,20 @@ pub(super) unsafe extern "C" fn encode(
             Ok(params) => params,
             Err(error) => return raise_error(py, error),
         };
+        // A bad buffer is refused before any work is done.
+        // SAFETY: the caller guarantees `buffer` is null or a valid host buffer.
+        if let Err(error) = unsafe { check_buffer(buffer) } {
+            return raise_error(py, error);
+        }
         let declared = if plan.is_null() {
             None
         } else {
             // SAFETY: the caller guarantees a non-null `plan` is live for the call.
             let Ok(plan) = (unsafe { handle(plan) }) else {
-                return OX_INVALID_ARGUMENT;
+                return invalid_argument(
+                    py,
+                    "encode was given an unusable plan; get one with plan_for",
+                );
             };
             match plan.declared(py) {
                 Ok(declared) => Some(declared),

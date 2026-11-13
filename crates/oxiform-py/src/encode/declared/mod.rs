@@ -129,9 +129,10 @@ pub(crate) fn declared_for(target: &Bound<'_, PyAny>) -> PyResult<Arc<DeclaredPl
         return Ok(handle.cast::<DeclaredHandle>()?.get().plan.clone());
     }
     let plan = Arc::new(read_plan(target)?);
-    let handle = Bound::new(py, DeclaredHandle { plan: plan.clone() })?;
-    cache.set_item(target, handle)?;
-    Ok(plan)
+    let handle = Bound::new(py, DeclaredHandle { plan })?;
+    // `setdefault` is atomic: threads that raced to read the same type all get the first plan.
+    let winner = cache.call_method1("setdefault", (target, handle))?;
+    Ok(winner.cast::<DeclaredHandle>()?.get().plan.clone())
 }
 
 fn read_plan(target: &Bound<'_, PyAny>) -> PyResult<DeclaredPlan> {

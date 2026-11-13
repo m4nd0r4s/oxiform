@@ -77,6 +77,21 @@ pub(super) unsafe extern "C" fn plan_retain(plan: *const OxPlan) {
     }
 }
 
+/// Whether Python objects can still be freed: the interpreter is up and not shutting down.
+fn interpreter_is_usable() -> bool {
+    // SAFETY: both are plain queries that are safe to call from any thread at any time.
+    unsafe {
+        if pyo3::ffi::Py_IsInitialized() == 0 {
+            return false;
+        }
+        #[cfg(Py_3_13)]
+        if pyo3::ffi::Py_IsFinalizing() != 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// # Safety
 ///
 /// `plan` must be null or a live plan of this oxiform, of which the caller owns the reference it
@@ -85,9 +100,18 @@ pub(super) unsafe extern "C" fn plan_release(plan: *const OxPlan) {
     if plan.is_null() {
         return;
     }
-    // SAFETY: the caller owns one reference of a live `Arc<PlanHandle>` and gives it up. Dropping
-    // the last one frees Python objects, so the thread attaches itself first.
-    Python::attach(|_| drop(unsafe { Arc::from_raw(plan.cast::<PlanHandle>()) }));
+    // After `Py_Finalize` (a plan dropped by a static or a background thread of the host) the
+    // Python objects of the plan cannot be freed, and attaching would abort or hang: the handle is
+    // leaked instead. Hosts release their plans before the interpreter shuts down.
+    if !interpreter_is_usable() {
+        return;
+    }
+    // Nothing unwinds into the host.
+    let _ = std::panic::catch_unwind(|| {
+        // SAFETY: the caller owns one reference of a live `Arc<PlanHandle>` and gives it up.
+        // Dropping the last one frees Python objects, so the thread attaches itself first.
+        Python::attach(|_| drop(unsafe { Arc::from_raw(plan.cast::<PlanHandle>()) }));
+    });
 }
 
 /// # Safety

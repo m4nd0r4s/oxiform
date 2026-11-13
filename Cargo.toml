@@ -16,6 +16,7 @@ oxiform-abi-export = { path = "crates/oxiform-abi-export" }
 oxiform-core = { path = "crates/oxiform-core" }
 oxiform-formats = { path = "crates/oxiform-formats" }
 pyo3 = "0.30"
+pyo3-build-config = "0.30"
 # Strict standard base64, for bytes in text formats.
 base64 = "0.22"
 regex = "1"

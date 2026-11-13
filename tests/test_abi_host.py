@@ -8,7 +8,9 @@ OXIFORM_REQUIRE_ABI_HOST so that a missing build fails instead of skipping).
 import gc
 import importlib
 import os
+import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal
 
@@ -417,6 +419,26 @@ def test_a_python_exception_of_the_sink_comes_through() -> None:
         plan.decode(b"{}")
 
 
+def test_a_zero_in_a_limit_is_the_default_of_that_field() -> None:
+    # A C host fills in one limit of a zeroed struct: the rest stay at their defaults.
+    status, value, *_ = raw_decode(zeroed_limits={"max_bytes": 100})
+    assert (status, value.name) == (OX_OK, "x")
+    status, _, problem, _ = raw_decode(zeroed_limits={"max_bytes": 5})
+    assert status == OX_INVALID and problem["errors"][0]["ctx"]["limit"] == "max_bytes"
+    status, value, *_ = raw_decode(zeroed_limits={})
+    assert (status, value.name) == (OX_OK, "x")
+    deep = host.plan_for(Any)
+    status, value, *_ = deep.decode_raw(
+        b"[[[[1]]]]", zeroed_limits={"max_depth": 0, "max_items": 0}
+    )
+    assert status == OX_OK and value == [[[[1]]]]
+    status, _, problem, _ = deep.decode_raw(b"[[[[1]]]]", zeroed_limits={"max_depth": 2})
+    assert status == OX_INVALID and problem["errors"][0]["ctx"]["limit"] == "max_depth"
+    # u64::MAX removes a limit.
+    status, *_ = deep.decode_raw(b"[1, 2, 3]", zeroed_limits={"max_items": 2**64 - 1})
+    assert status == OX_OK
+
+
 # --- issues ------------------------------------------------------------------------------------
 
 ISSUE_CASES = [
@@ -633,6 +655,14 @@ def test_encode_arguments_oxiform_cannot_honour_say_what_to_do(
     assert type(error) is error_type and fragment in str(error)
 
 
+def test_an_encode_with_a_bad_buffer_does_no_work() -> None:
+    # `object()` cannot be written: if the buffer were checked after the walk, this would be an
+    # EncodeError (status 2); it is refused first.
+    status, written, _, error = host.encode_raw(object(), prefix=b"p", buffer_struct_size=8)
+    assert status == OX_INVALID_ARGUMENT and written == b"p"
+    assert isinstance(error, ValueError)
+
+
 # --- threads -----------------------------------------------------------------------------------
 
 
@@ -656,3 +686,34 @@ def test_one_plan_serves_many_threads() -> None:
     assert {encoded for _, encoded in results} == {
         ox.json.encode(ox.json.decode(b'{"id": 1, "name": "z"}', User))
     }
+
+
+def test_threads_that_race_to_compile_one_type_share_one_plan() -> None:
+    @ox.model
+    class Raced:
+        id: int
+
+    barrier = threading.Barrier(16)
+    targets = [list[Raced], dict[str, Raced], tuple[Raced, ...], Raced | None]
+
+    def ask(_: int) -> list[int]:
+        barrier.wait()
+        return [_oxiform._plan_id(target) for target in targets]  # pyright: ignore[reportPrivateUsage]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        answers = list(pool.map(ask, range(16)))
+    assert all(answer == answers[0] for answer in answers)
+    assert len(set(answers[0])) == len(targets)
+
+
+def test_plans_alive_at_interpreter_exit_do_not_crash_it() -> None:
+    code = (
+        "import oxiform as ox, oxiform_abi_host as h\n"
+        "@ox.model\n"
+        "class M:\n"
+        "    id: int\n"
+        "PLANS = [h.plan_for(M), h.plan_for(list[M])]\n"
+        "print(PLANS[0].decode(b'{\"id\": 1}').id)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert (done.returncode, done.stdout.strip(), done.stderr) == (0, "1", "")

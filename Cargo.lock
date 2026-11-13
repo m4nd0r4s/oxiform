@@ -101,6 +101,7 @@ dependencies = [
  "oxiform-core",
  "oxiform-formats",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
