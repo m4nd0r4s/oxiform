@@ -284,4 +284,4 @@ def test_a_per_call_unknown_policy_overrides_the_model_in_both_directions() -> N
 
 def test_an_unknown_policy_that_does_not_exist_says_which_do() -> None:
     with pytest.raises(ValueError, match='unknown must be "ignore", "forbid" or None'):
-        ox.json.decode(b"{}", dict, unknown="error")  # pyright: ignore[reportCallIssue]
+        ox.json.decode(b"{}", dict, unknown="error")  # pyright: ignore
