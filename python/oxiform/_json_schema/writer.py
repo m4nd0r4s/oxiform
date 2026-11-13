@@ -37,9 +37,11 @@ from oxiform.errors import EncodeError, SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
 __all__ = [
+    "JsonSchema",
     "NodeRegistry",
     "Ref",
-    "JsonSchema",
+    "SchemaCoercion",
+    "SchemaMode",
     "SchemaWriter",
     "Variant",
 ]
@@ -278,7 +280,7 @@ class SchemaWriter:
         are few (any combination of members, and the complement of each), else its bounds; any
         integer for a flag that keeps or conforms unknown bits, as ``IntFlag`` does."""
         mask = 0
-        for member in cls:
+        for member in cls.__members__.values():  # every member, multi-bit and aliases included
             mask |= int(member.value)
         if getattr(cls, "_boundary_", None) is not enum.STRICT:
             return self._with_text({"type": "integer"}, patterns.INTEGER_TEXT)
