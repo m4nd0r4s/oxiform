@@ -7,6 +7,7 @@ use pyo3::types::PyType;
 static VALIDATION_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static DECODE_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static SCHEMA_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static INVALID_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static ENCODE_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static DESCRIBE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 static ANY: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
@@ -21,6 +22,10 @@ pub(crate) fn decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
 
 pub(crate) fn schema_error(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     SCHEMA_ERROR.import(py, "oxiform.errors", "SchemaError")
+}
+
+pub(crate) fn invalid_error(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    INVALID_ERROR.import(py, "oxiform.errors", "Invalid")
 }
 
 pub(crate) fn encode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {

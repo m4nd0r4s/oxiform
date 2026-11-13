@@ -2,6 +2,7 @@
 
 import dataclasses
 import datetime
+import difflib
 import enum
 import types
 import typing
@@ -23,11 +24,13 @@ from oxiform._introspection.model import (
     StructDescription,
     TemporalKind,
     TypeDescription,
+    ValidatorDescription,
 )
 from oxiform._introspection.unions import UnionMode, is_union, union_mode, without_none
 from oxiform._model_options import model_options
 from oxiform._naive import NAIVE
 from oxiform._secret import Secret
+from oxiform._validators import ValidatorSpec, validators_of
 from oxiform.errors import SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
@@ -268,6 +271,7 @@ class _DescriptionBuilder:
             unknown_fields=model_options(cls).unknown,
             tag=tag_of(cls),
             tag_field=model_options(cls).tag_field,
+            validators=_model_validators(cls),
         )
 
     def _layout(
@@ -278,6 +282,9 @@ class _DescriptionBuilder:
         hints = type_hints(cls)
         model = model_options(cls)
         members: list[Member] = []
+        by_field = _field_validators(cls)
+        if flattening:
+            _refuse_flattened_model_validators(cls, flattening[-1])
         for field in dataclasses.fields(cls):
             location = f"{cls.__qualname__}.{field.name}"
             options = checked_options(field, location)
@@ -302,10 +309,72 @@ class _DescriptionBuilder:
                     aliases=options.aliases,
                     value_type=self.type_of(annotation, location, outer),
                     default=default,
+                    validators=tuple(by_field.pop(field.name, ())),
                 )
             )
             members.append(("field", field.name, len(fields) - 1))
+        _check_validated_fields(cls, by_field)
         return Layout(cls, tuple(members), hasattr(cls, "__post_init__"))
+
+
+def _described(spec: ValidatorSpec, cls: type) -> ValidatorDescription:
+    try:
+        reading = spec.signature()
+    except NameError as error:
+        message = f"{spec.name}: cannot resolve an annotation: {error}"
+        raise UnresolvedAnnotationError(message) from error
+    return ValidatorDescription(
+        name=spec.name,
+        function=spec.function,
+        cls=cls,
+        context=reading.context,
+        context_required=reading.required,
+        context_none_when_absent=reading.none_when_absent,
+    )
+
+
+def _field_validators(cls: type) -> dict[str, list[ValidatorDescription]]:
+    """The field validators of ``cls`` by the name of the field, each list in order."""
+    by_field: dict[str, list[ValidatorDescription]] = {}
+    for spec in validators_of(cls):
+        if spec.model:
+            continue
+        described = _described(spec, cls)
+        for name in spec.fields:
+            by_field.setdefault(name, []).append(described)
+    return by_field
+
+
+def _model_validators(cls: type) -> tuple[ValidatorDescription, ...]:
+    return tuple(_described(spec, cls) for spec in validators_of(cls) if spec.model)
+
+
+def _check_validated_fields(cls: type, unused: dict[str, list[ValidatorDescription]]) -> None:
+    """Refuses a validator that names something that is not a field read from the input."""
+    if not unused:
+        return
+    own = {field.name: field for field in dataclasses.fields(cls)}
+    for name, validators in unused.items():
+        where = f"{cls.__qualname__}: {validators[0].name} validates {name!r}"
+        if name in own:
+            raise SchemaError(
+                f"{where}, which the input does not give (it is skipped on read, not part of "
+                "__init__ or flattened): validate the fields that are read"
+            )
+        close = difflib.get_close_matches(name, list(own), n=1)
+        hint = f" (did you mean {close[0]!r}?)" if close else ""
+        raise SchemaError(f"{where}, but {cls.__qualname__} has no such field{hint}")
+
+
+def _refuse_flattened_model_validators(cls: type, outer: type) -> None:
+    for spec in validators_of(cls):
+        if spec.model:
+            raise SchemaError(
+                f"{spec.name} validates the whole of {cls.__qualname__}, which "
+                f"{outer.__qualname__} flattens: its instance is built from the fields of the "
+                "outer model, so the validator cannot run. "
+                f"Move it to {outer.__qualname__}, or do not flatten"
+            )
 
 
 def _refuse_secret_variants(variants: list[object], location: str) -> None:

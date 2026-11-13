@@ -88,7 +88,7 @@ fn issue_dict<'py>(py: Python<'py>, issue: &Issue, format: &str) -> PyResult<Bou
         context.set_item("format", format)?;
     }
     let dict = PyDict::new(py);
-    dict.set_item("code", issue.code.as_str())?;
+    dict.set_item("code", issue.code_text())?;
     dict.set_item("path", path)?;
     dict.set_item("pointer", issue.pointer())?;
     dict.set_item("message", &issue.message)?;

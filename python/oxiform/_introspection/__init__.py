@@ -17,6 +17,7 @@ from oxiform._introspection.model import (
     Member,
     StructDescription,
     TypeDescription,
+    ValidatorDescription,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "StructDescription",
     "TypeDescription",
     "UnresolvedAnnotationError",
+    "ValidatorDescription",
     "declared_description",
     "describe",
     "encoded_fields",
