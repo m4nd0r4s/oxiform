@@ -409,3 +409,27 @@ def test_the_schemas_accept_what_decode_accepts_and_what_encode_writes() -> None
 def test_a_bare_secret_has_no_schema() -> None:
     with pytest.raises(ox.SchemaError, match=r"Secret\[str\]"):
         ox.json_schema(ox.Secret)
+
+
+def test_a_default_that_holds_a_secret_is_never_published() -> None:
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Wrapper:
+        token: ox.Secret[str]
+
+    @ox.model
+    class Holder:
+        many: tuple[ox.Secret[str], ...] = (ox.Secret("a"), ox.Secret("b"))
+        mapped: dict[str, ox.Secret[str]] = ox.field(default_factory=lambda: {"k": ox.Secret("v")})
+        plain: ox.Secret[str] = "x"  # type: ignore[assignment]  # pyright: ignore[reportAssignmentType]
+        spare: ox.Secret[str] | None = None
+        tag: str = "t"
+
+    text = json.dumps(ox.json_schema(Holder))
+    properties = defs_of(Holder)["Holder"]["properties"]
+    for name in ("many", "plain"):
+        assert "default" not in properties[name]
+    assert "********" not in text
+    assert properties["spare"].get("default") is None
+    assert properties["tag"]["default"] == "t"

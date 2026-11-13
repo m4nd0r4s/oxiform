@@ -57,7 +57,8 @@ def where(origin: Origin) -> str:
 
 
 _REGISTRY: dict[int, dict[str, Origin]] = {}
-_LOCK = threading.Lock()
+# Re-entrant: a weakref callback can run while this thread holds the lock (a collection).
+_LOCK = threading.RLock()
 
 
 def remember(settings: object, origins: dict[str, Origin]) -> None:

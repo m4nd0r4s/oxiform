@@ -644,10 +644,36 @@ def _description(cls: type) -> str | None:
     return text
 
 
+def _holds_secret(value: object, annotation: object) -> bool:
+    """Whether a default is, or contains, a secret, or sits in a field declared as one: it is
+    never published (encode would write the mask, which is no value of the field)."""
+    return _declares_secret(annotation) or _contains_secret(value)
+
+
+def _declares_secret(annotation: object) -> bool:
+    if annotation is Secret or typing.get_origin(annotation) is Secret:
+        return True
+    return any(_declares_secret(argument) for argument in typing.get_args(annotation))
+
+
+def _contains_secret(value: object) -> bool:
+    if isinstance(value, Secret):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_secret(item) for item in cast("dict[object, object]", value).values())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_contains_secret(item) for item in cast("list[object]", value))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(
+            _contains_secret(getattr(value, field.name)) for field in dataclasses.fields(value)
+        )
+    return False
+
+
 def _default_json(default: Default, annotation: object) -> object:
     """The default as JSON, or ``_NO_DEFAULT`` for a factory and for a value that cannot be
     written."""
-    if default is None or default[0] != "value" or isinstance(default[1], Secret):
+    if default is None or default[0] != "value" or _holds_secret(default[1], annotation):
         return _NO_DEFAULT
     try:
         return json.loads(json_encode(default[1], type=annotation))

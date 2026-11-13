@@ -9,7 +9,7 @@ from typing import Any, Final, Generic, NoReturn, TypeVar, cast
 
 __all__ = ["MASK", "Secret"]
 
-_T = TypeVar("_T")
+_T = TypeVar("_T", covariant=True)
 
 MASK: Final = "********"
 """What a secret shows and what encode writes: one fixed text, so it says nothing of the value."""
@@ -60,7 +60,10 @@ class Secret(Generic[_T]):
         mine: object = self._value
         theirs: object = cast("Secret[object]", other)._value
         if isinstance(mine, str) and isinstance(theirs, str):
-            return hmac.compare_digest(mine.encode(), theirs.encode())
+            # surrogatepass: text with lone surrogates (os.environ decoding) must compare, not raise
+            return hmac.compare_digest(
+                mine.encode("utf-8", "surrogatepass"), theirs.encode("utf-8", "surrogatepass")
+            )
         if isinstance(mine, bytes) and isinstance(theirs, bytes):
             return hmac.compare_digest(mine, theirs)
         return bool(mine == theirs)
