@@ -1,5 +1,6 @@
 //! How one run reads its input: how strictly it coerces, and which limits apply.
 
+use crate::description::UnknownFields;
 use crate::limits::Limits;
 
 /// How strictly values are coerced to the target type (D10).
@@ -23,6 +24,10 @@ pub struct Options {
     /// in `limits` because it shapes the report and protects nothing: `Limits` holds sizes
     /// of the input, and a caller that turns the limits off still wants a bounded report.
     pub max_errors: usize,
+    /// What to do with keys that match no field, for every structure of the run: `None` leaves
+    /// each structure to its own declaration (a model's `unknown=` option); `Some` overrides
+    /// all of them (OX-9), so a host can forbid, or ignore, unknown keys in a whole request.
+    pub unknown: Option<UnknownFields>,
 }
 
 impl Options {
@@ -36,6 +41,7 @@ impl Default for Options {
             mode: Mode::default(),
             limits: Limits::default(),
             max_errors: Self::DEFAULT_MAX_ERRORS,
+            unknown: None,
         }
     }
 }

@@ -3,6 +3,7 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 _T = TypeVar("_T")
 
 Mode = Literal["strict", "lax"]
+Unknown = Literal["ignore", "forbid"]
 
 __version__: str
 
@@ -49,6 +50,7 @@ def json_decode(
     mode: Mode = "strict",
     limits: Limits | None = None,
     max_errors: int = 100,
+    unknown: Unknown | None = None,
 ) -> Any: ...
 @overload
 def json_decode(
@@ -58,6 +60,7 @@ def json_decode(
     mode: Mode = "strict",
     limits: Limits | None = None,
     max_errors: int = 100,
+    unknown: Unknown | None = None,
 ) -> _T: ...
 @overload
 def json_decode(
@@ -67,6 +70,7 @@ def json_decode(
     mode: Mode = "strict",
     limits: Limits | None = None,
     max_errors: int = 100,
+    unknown: Unknown | None = None,
 ) -> Any: ...
 def warmup(*types: object) -> None:
     """Compiles the plans of ``types`` now instead of on first use."""
@@ -105,6 +109,7 @@ class JsonDecoder(Generic[_T]):
         mode: Mode = "strict",
         limits: Limits | None = None,
         max_errors: int = 100,
+        unknown: Unknown | None = None,
     ) -> JsonDecoder[_T]: ...
     @overload
     def __new__(
@@ -114,6 +119,7 @@ class JsonDecoder(Generic[_T]):
         mode: Mode = "strict",
         limits: Limits | None = None,
         max_errors: int = 100,
+        unknown: Unknown | None = None,
     ) -> JsonDecoder[Any]: ...
     @property
     def type(self) -> object: ...

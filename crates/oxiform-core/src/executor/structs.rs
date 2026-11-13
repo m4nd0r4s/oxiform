@@ -80,7 +80,8 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     ) -> Result<bool, Stop<S::Error>> {
         let value_event = self.next_event()?;
         let Some(index) = index else {
-            let forbidden = structure.unknown_fields == UnknownFields::Forbid;
+            let policy = self.unknown.unwrap_or(structure.unknown_fields);
+            let forbidden = policy == UnknownFields::Forbid;
             if forbidden {
                 self.report(
                     ErrorCode::UnknownField,

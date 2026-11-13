@@ -257,3 +257,31 @@ def test_rejects_wrong_declarations_at_once(declare: Any, message: str) -> None:
     with pytest.raises(ox.SchemaError) as raised:
         declare()
     assert str(raised.value).startswith(message)
+
+
+def test_a_per_call_unknown_policy_overrides_the_model_in_both_directions() -> None:
+    @ox.model
+    class Loose:
+        name: str
+
+    @ox.model(unknown="forbid")
+    class Tight:
+        name: str
+
+    body = b'{"name": "a", "extra": 1}'
+    assert ox.json.decode(body, Loose).name == "a"
+    with pytest.raises(ox.ValidationError) as raised:
+        ox.json.decode(body, Loose, unknown="forbid")
+    assert [(e["code"], e["pointer"]) for e in raised.value.errors()] == [
+        ("unknown_field", "/extra")
+    ]
+    assert ox.json.decode(body, Tight, unknown="ignore").name == "a"
+    assert ox.json.Decoder(Loose, unknown="forbid").type is Loose
+    with pytest.raises(ox.ValidationError):
+        ox.json.Decoder(Loose, unknown="forbid").decode(body)
+    assert ox.json.decode(body, Loose, unknown=None).name == "a"
+
+
+def test_an_unknown_policy_that_does_not_exist_says_which_do() -> None:
+    with pytest.raises(ValueError, match='unknown must be "ignore", "forbid" or None'):
+        ox.json.decode(b"{}", dict, unknown="error")  # pyright: ignore[reportCallIssue]

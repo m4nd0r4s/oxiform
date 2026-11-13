@@ -441,6 +441,7 @@ ox.json.Encoder(*, type=None, **opts) / ox.json.Decoder(type, **opts)       # re
 ```
 
 - **`data`** can be `bytes`, `bytearray`, `memoryview` or `str`. The encoding is always UTF-8.
+- **`unknown=`** (`"ignore"` or `"forbid"`, default `None`) overrides, for one call, the `unknown=` option of every model the call reaches: a host can forbid unknown keys in all of its request bodies while the models keep `ignore`, or ignore them while a model says `forbid`. `None` leaves each model to its own option; anything else is a `ValueError` that says which values exist. It reaches the embedding ABI as a field of the decode options (section 9.5).
 - **`decode`** reads exactly one document. A YAML with several documents is read with `iter_decode`.
 - **`iter_decode(source)`** accepts bytes, a binary file or a `Path`.
   - `path` is the JSON Pointer of the array to walk (`"/items"`), and `lines=True` reads JSON Lines (JSON only).
@@ -936,7 +937,7 @@ ox.Partial[T]                      # decode returns a dict with only the fields 
 
 # --- formats: ox.json, ox.yaml, ox.toml, ox.msgpack ---
 decode(data, type=Any, *, mode="strict" | "lax", validate=True, context=None,
-       limits=None, max_errors=100, fail_fast=False) -> T
+       limits=None, max_errors=100, fail_fast=False, unknown=None | "ignore" | "forbid") -> T
 encode(obj, *, type=None, include=None, exclude=None, policy=None, validate=False) -> bytes
 iter_decode(source, type=Any, *, path=None, **opcoes_de_decode) -> Iterator[T]   # does not exist in ox.toml
 decode_many(docs, type, *, on_error="raise" | "collect", threads=1, **opcoes_de_decode) -> DecodeResult

@@ -11,6 +11,7 @@ mod structs;
 mod temporal;
 mod unions;
 
+use crate::description::UnknownFields;
 use crate::events::{Event, EventReader, ReaderError, ReaderErrorKind};
 use crate::issues::{ContextValue, ErrorCode, Issue, PathSegment, Report, ReportKind};
 use crate::limits::Limits;
@@ -49,6 +50,7 @@ where
         limits: &options.limits,
         mode: options.mode,
         max_errors: options.max_errors.max(1),
+        unknown: options.unknown,
         issues: Vec::new(),
     };
     let outcome = executor.run();
@@ -89,6 +91,8 @@ pub(crate) struct Executor<'run, 'input, R, S> {
     mode: Mode,
     /// At least 1.
     max_errors: usize,
+    /// Overrides the `unknown_fields` of every structure when set.
+    unknown: Option<UnknownFields>,
     issues: Vec<Issue>,
 }
 

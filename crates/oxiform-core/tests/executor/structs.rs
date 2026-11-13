@@ -1,6 +1,7 @@
 use oxiform_core::description::{Constraints, Description, TypeDescription, UnknownFields};
+use oxiform_core::options::Options;
 
-use crate::support::{Value, decode, field, integer, string, structure, summary};
+use crate::support::{Value, decode, decode_options, field, integer, string, structure, summary};
 
 fn user() -> Description {
     let mut age = field("age", TypeDescription::Optional(Box::new(integer())));
@@ -89,6 +90,30 @@ fn ignores_or_forbids_unknown_fields() {
         summary(&strict, input),
         [("unknown_field", "/extra".into(), "unknown field".into())]
     );
+}
+
+#[test]
+fn a_per_call_policy_overrides_the_unknown_fields_of_every_structure() {
+    let nested = r#"{"id": 1, "fullName": "a", "friends": [
+        {"id": 2, "fullName": "b", "friends": [], "typo": 1}], "extra": 0}"#;
+    let call = |description: &Description, unknown| {
+        let options = Options {
+            unknown: Some(unknown),
+            ..Options::default()
+        };
+        decode_options(description, nested, &options)
+    };
+    // `ignore` in the model, `forbid` in the call: the root and the nested user both reject.
+    let report = call(&user(), UnknownFields::Forbid).expect_err("extra keys are forbidden");
+    let pointers: Vec<_> = report.issues.iter().map(|issue| issue.pointer()).collect();
+    assert_eq!(pointers, ["/friends/0/typo", "/extra"]);
+    // `forbid` in the model, `ignore` in the call.
+    let mut strict = user();
+    strict.structs[0].unknown_fields = UnknownFields::Forbid;
+    assert!(decode(&strict, nested).is_err());
+    assert!(call(&strict, UnknownFields::Ignore).is_ok());
+    // Without a policy in the call, the model decides.
+    assert!(decode_options(&strict, nested, &Options::default()).is_err());
 }
 
 #[test]

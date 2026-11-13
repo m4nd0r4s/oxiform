@@ -18,21 +18,25 @@ use crate::python_objects::any_type;
 use crate::sink::PythonSink;
 
 /// Reads one JSON document as `type` (any type when omitted), validating it in the same pass.
+///
+/// `unknown` (`"ignore"` or `"forbid"`) overrides, for this call, what every model does with keys
+/// that match no field.
 #[pyfunction]
-#[pyo3(signature = (data, r#type = None, *, mode = "strict", limits = None, max_errors = 100))]
+#[pyo3(signature = (data, r#type = None, *, mode = "strict", limits = None, max_errors = 100, unknown = None))]
 pub(crate) fn json_decode<'py>(
     data: &Bound<'py, PyAny>,
     r#type: Option<&Bound<'py, PyAny>>,
     mode: &str,
     limits: Option<&PyLimits>,
     #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
+    unknown: Option<&str>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let target = match r#type {
         Some(target) => target.clone(),
         None => any_type(data.py())?.clone(),
     };
     let compiled = compiled_for(&target)?;
-    let options = decode_options(mode, limits, max_errors)?;
+    let options = decode_options(mode, limits, max_errors, unknown)?;
     decode_with(data, &target, &compiled, &options)
 }
 
@@ -47,13 +51,14 @@ pub(crate) struct JsonDecoder {
 #[pymethods]
 impl JsonDecoder {
     #[new]
-    #[pyo3(signature = (r#type = None, *, mode = "strict", limits = None, max_errors = 100))]
+    #[pyo3(signature = (r#type = None, *, mode = "strict", limits = None, max_errors = 100, unknown = None))]
     fn new(
         py: Python<'_>,
         r#type: Option<&Bound<'_, PyAny>>,
         mode: &str,
         limits: Option<&PyLimits>,
         #[pyo3(from_py_with = max_errors_argument)] max_errors: usize,
+        unknown: Option<&str>,
     ) -> PyResult<Self> {
         let target = match r#type {
             Some(target) => target.clone(),
@@ -63,7 +68,7 @@ impl JsonDecoder {
         Ok(Self {
             target: target.unbind(),
             compiled,
-            options: decode_options(mode, limits, max_errors)?,
+            options: decode_options(mode, limits, max_errors, unknown)?,
         })
     }
 

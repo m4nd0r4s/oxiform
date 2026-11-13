@@ -1,5 +1,6 @@
-//! The options of a decode call: `ox.Limits`, `mode` and `max_errors`.
+//! The options of a decode call: `ox.Limits`, `mode`, `max_errors` and `unknown`.
 
+use oxiform_core::description::UnknownFields;
 use oxiform_core::limits::Limits;
 use oxiform_core::options::{Mode, Options};
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
@@ -147,6 +148,7 @@ pub(crate) fn decode_options(
     mode: &str,
     limits: Option<&PyLimits>,
     max_errors: usize,
+    unknown: Option<&str>,
 ) -> PyResult<Options> {
     let mode = match mode {
         "strict" => Mode::Strict,
@@ -167,9 +169,21 @@ pub(crate) fn decode_options(
         },
         None => Limits::DEFAULT,
     };
+    let unknown = match unknown {
+        None => None,
+        Some("ignore") => Some(UnknownFields::Ignore),
+        Some("forbid") => Some(UnknownFields::Forbid),
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "unknown must be \"ignore\", \"forbid\" or None, not {other:?}; \
+                 None leaves it to the unknown= option of each model"
+            )));
+        }
+    };
     Ok(Options {
         mode,
         limits,
         max_errors,
+        unknown,
     })
 }
