@@ -770,6 +770,9 @@ def test_each_class_owns_its_naming_wherever_it_is_used(tmp_path: Path) -> None:
         cfg.load(Plain, [cfg.file(write(tmp_path / "b.toml", "[section]\npool_size = 5\n"))])
 
 
+PACKAGE = str(Path(ox.__file__).parent)
+
+
 def frame_text(error: BaseException) -> str:
     """Everything the local variables of the frames of a traceback, and of the exceptions it
     chains to, can show: what an error tracker or --showlocals captures."""
@@ -782,7 +785,7 @@ def frame_text(error: BaseException) -> str:
         pending.extend([current.__context__, current.__cause__])
         traceback = current.__traceback__
         while traceback is not None:
-            if "/oxiform/" in traceback.tb_frame.f_code.co_filename:  # not the test's own frames
+            if traceback.tb_frame.f_code.co_filename.startswith(PACKAGE):  # not the test's frames
                 for name, value in traceback.tb_frame.f_locals.items():
                     seen.append(f"{name}={value!r}")
             traceback = traceback.tb_next
