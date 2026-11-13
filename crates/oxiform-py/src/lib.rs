@@ -7,6 +7,7 @@ mod description;
 mod encode;
 mod errors;
 mod options;
+mod pairs;
 mod python_objects;
 mod sink;
 mod slots;
@@ -21,6 +22,8 @@ fn _oxiform(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(compiled::_plan_id, module)?)?;
     abi::export(module)?;
     module.add_function(wrap_pyfunction!(decode::json_decode, module)?)?;
+    module.add_function(wrap_pyfunction!(pairs::urlencoded_decode, module)?)?;
+    module.add_function(wrap_pyfunction!(pairs::pairs_decode, module)?)?;
     module.add_function(wrap_pyfunction!(encode::json::json_encode, module)?)?;
     module.add_class::<encode::json::JsonEncoder>()?;
     module.add_class::<decode::JsonDecoder>()?;

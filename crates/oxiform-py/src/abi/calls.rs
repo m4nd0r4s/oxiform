@@ -2,12 +2,12 @@
 //! share (the attached guard and the mapping of a status to a Python exception).
 
 use oxiform_abi::{
-    OX_BUFFER, OX_FORMAT_JSON, OX_INTERNAL, OX_INVALID, OX_INVALID_ARGUMENT, OX_OK,
-    OX_PYTHON_ERROR, OX_UNSUPPORTED, OxBuffer, OxDecodeOptions, OxEncodeOptions, OxPlan,
-    OxPyObject, OxReport,
+    OX_BUFFER, OX_FORMAT_JSON, OX_FORMAT_PAIRS, OX_FORMAT_URLENCODED, OX_INTERNAL, OX_INVALID,
+    OX_INVALID_ARGUMENT, OX_OK, OX_PYTHON_ERROR, OX_UNSUPPORTED, OxBuffer, OxDecodeOptions,
+    OxEncodeOptions, OxPair, OxPairsOptions, OxPlan, OxPyObject, OxReport,
 };
 use oxiform_abi_export::{
-    Error, append, check_buffer, decode_options, encode_options, into_report_pointer,
+    Error, append, check_buffer, decode_options, encode_options, into_report_pointer, pairs_options,
 };
 use oxiform_core::executor::Failure;
 use pyo3::exceptions::{PyBufferError, PyNotImplementedError, PyRuntimeError, PyValueError};
@@ -16,6 +16,7 @@ use pyo3::prelude::*;
 use super::plan::handle;
 use crate::decode::decode_bytes;
 use crate::encode::json::encode_to_vec;
+use crate::pairs::{PairsSource, decode_pairs as decode_pairs_source, require_model};
 
 /// Runs `call` with the thread attached, and turns a panic into `OX_INTERNAL` with a
 /// `RuntimeError` set, so nothing unwinds across the boundary.
@@ -204,4 +205,167 @@ pub(super) unsafe extern "C" fn encode(
             Err(error) => raise_error(py, error),
         }
     })
+}
+
+/// # Safety
+///
+/// See [`oxiform_abi::OxiformApi::decode_pairs`].
+pub(super) unsafe extern "C" fn decode_pairs(
+    plan: *const OxPlan,
+    format: u32,
+    data: *const u8,
+    len: usize,
+    pairs: *const OxPair,
+    pair_count: usize,
+    options: *const OxPairsOptions,
+    out_value: *mut *mut OxPyObject,
+    out_report: *mut *mut OxReport,
+) -> i32 {
+    attached(|py| {
+        if out_value.is_null() || out_report.is_null() {
+            return invalid_argument(
+                py,
+                "decode_pairs was given a NULL out_value or out_report; pass the addresses of two pointers",
+            );
+        }
+        // SAFETY: both are non-null and the caller guarantees they are writable.
+        unsafe {
+            out_value.write(core::ptr::null_mut());
+            out_report.write(core::ptr::null_mut());
+        }
+        if format != OX_FORMAT_URLENCODED && format != OX_FORMAT_PAIRS {
+            return raise_error(
+                py,
+                Error::new(
+                    OX_UNSUPPORTED,
+                    format!(
+                        "format {format} is not a source of pairs; decode_pairs reads \
+                         OX_FORMAT_URLENCODED (2) and OX_FORMAT_PAIRS (3), and decode reads \
+                         documents: upgrade oxiform if you were built for a later minor version"
+                    ),
+                ),
+            );
+        }
+        // SAFETY: the caller guarantees `plan` is live for the call.
+        let Ok(plan) = (unsafe { handle(plan) }) else {
+            return invalid_argument(
+                py,
+                "decode_pairs was given a NULL plan; get one with plan_for",
+            );
+        };
+        if let Err(hint) = require_model(&plan.compiled) {
+            return invalid_argument(
+                py,
+                &format!("decode_pairs was given the plan of a type that is not a model: {hint}"),
+            );
+        }
+        let urlencoded = format == OX_FORMAT_URLENCODED;
+        let (unused, unused_what, used) = if urlencoded {
+            (
+                !pairs.is_null() || pair_count != 0,
+                "pairs and pair_count",
+                "data",
+            )
+        } else {
+            (!data.is_null() || len != 0, "data and len", "pairs")
+        };
+        if unused {
+            return invalid_argument(
+                py,
+                &format!(
+                    "decode_pairs was given {unused_what} for a source that reads {used}; pass \
+                     NULL and 0 for the one it does not read"
+                ),
+            );
+        }
+        if (urlencoded && data.is_null() && len > 0)
+            || (!urlencoded && pairs.is_null() && pair_count > 0)
+        {
+            return invalid_argument(
+                py,
+                &format!(
+                    "decode_pairs was given a NULL {used} pointer with a length above 0; pass the source"
+                ),
+            );
+        }
+        // SAFETY: the caller guarantees `options` is null or readable as its `struct_size` says.
+        let params = match unsafe { pairs_options(options) } {
+            Ok(params) => params,
+            Err(error) => return raise_error(py, error),
+        };
+        let outcome = if urlencoded {
+            let input: &[u8] = if len == 0 {
+                &[]
+            } else {
+                // SAFETY: `len` bytes at `data` are readable and unchanged during the call.
+                unsafe { core::slice::from_raw_parts(data, len) }
+            };
+            decode_pairs_source(
+                py,
+                PairsSource::Urlencoded(input),
+                &plan.compiled,
+                &params.options,
+                params.case_insensitive,
+            )
+        } else {
+            let raw: &[OxPair] = if pair_count == 0 {
+                &[]
+            } else {
+                // SAFETY: `pair_count` pairs at `pairs` are readable and unchanged during the call.
+                unsafe { core::slice::from_raw_parts(pairs, pair_count) }
+            };
+            let mut views = Vec::with_capacity(raw.len());
+            for pair in raw {
+                let (Some(name), Some(value)) = (
+                    // SAFETY: each string of a pair is `len` readable bytes (or null with 0).
+                    unsafe { bytes_of(pair.name.ptr, pair.name.len) },
+                    unsafe { bytes_of(pair.value.ptr, pair.value.len) },
+                ) else {
+                    return invalid_argument(
+                        py,
+                        "decode_pairs was given a pair with a NULL string and a length above 0; \
+                         pass the bytes of every name and value",
+                    );
+                };
+                views.push((name, value));
+            }
+            decode_pairs_source(
+                py,
+                PairsSource::Pairs(&views),
+                &plan.compiled,
+                &params.options,
+                params.case_insensitive,
+            )
+        };
+        match outcome {
+            Ok(value) => {
+                // SAFETY: `out_value` is writable; `into_ptr` gives the reference the host owns.
+                unsafe { out_value.write(value.into_ptr().cast::<OxPyObject>()) };
+                OX_OK
+            }
+            Err(Failure::Invalid(report)) => {
+                let format = if urlencoded { "urlencoded" } else { "pairs" };
+                // SAFETY: `out_report` is writable.
+                unsafe { out_report.write(into_report_pointer(report, format)) };
+                OX_INVALID
+            }
+            Err(Failure::Sink(error)) => raise(py, OX_PYTHON_ERROR, error),
+        }
+    })
+}
+
+/// The bytes at `pointer`, empty for length 0, or `None` for a null pointer with a length.
+///
+/// # Safety
+///
+/// A non-null `pointer` must be readable for `len` bytes for as long as `'a`.
+unsafe fn bytes_of<'a>(pointer: *const u8, len: usize) -> Option<&'a [u8]> {
+    if len == 0 {
+        Some(&[])
+    } else if pointer.is_null() {
+        None
+    } else {
+        // SAFETY: forwarded from the caller.
+        Some(unsafe { core::slice::from_raw_parts(pointer, len) })
+    }
 }

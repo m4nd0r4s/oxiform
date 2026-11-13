@@ -7,9 +7,10 @@ use core::ptr::NonNull;
 use crate::VecBuffer;
 use crate::api::OxiformApi;
 use crate::types::{
-    OX_ENCODE_INDENT, OX_ENCODE_SORT_KEYS, OX_FORMAT_JSON, OX_INVALID, OX_MODE_LAX, OX_MODE_STRICT,
-    OX_OK, OX_UNKNOWN_FORBID, OX_UNKNOWN_IGNORE, OX_UNKNOWN_MODEL, OxBuffer, OxDecodeOptions,
-    OxEncodeOptions, OxLimits, OxPlan, OxPyObject, OxReport, OxReportPart, OxStr,
+    OX_ENCODE_INDENT, OX_ENCODE_SORT_KEYS, OX_FORMAT_JSON, OX_FORMAT_PAIRS, OX_FORMAT_URLENCODED,
+    OX_INVALID, OX_MODE_LAX, OX_MODE_STRICT, OX_OK, OX_PAIRS_CASE_INSENSITIVE, OX_UNKNOWN_FORBID,
+    OX_UNKNOWN_IGNORE, OX_UNKNOWN_MODEL, OxBuffer, OxDecodeOptions, OxEncodeOptions, OxLimits,
+    OxPair, OxPairsOptions, OxPlan, OxPyObject, OxReport, OxReportPart, OxStr,
 };
 use crate::views::ReportView;
 
@@ -64,6 +65,18 @@ pub enum Unknown {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DecodeOptions {
     pub mode: Mode,
+    /// Issues collected before the decode stops: 0 is the default (100).
+    pub max_errors: u64,
+    /// `None`: the default limits.
+    pub limits: Option<OxLimits>,
+    pub unknown: Unknown,
+}
+
+/// The options of a `decode_pairs` call (ABI 1.1). Pairs are always read in lax mode.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PairsOptions {
+    /// Match names without regard to ASCII case, as header names are matched.
+    pub case_insensitive: bool,
     /// Issues collected before the decode stops: 0 is the default (100).
     pub max_errors: u64,
     /// `None`: the default limits.
@@ -170,11 +183,7 @@ impl Api {
             Mode::Lax => OX_MODE_LAX,
         };
         raw.max_errors = options.max_errors;
-        raw.unknown = match options.unknown {
-            Unknown::Model => OX_UNKNOWN_MODEL,
-            Unknown::Ignore => OX_UNKNOWN_IGNORE,
-            Unknown::Forbid => OX_UNKNOWN_FORBID,
-        };
+        raw.unknown = unknown_value(options.unknown);
         raw.limits = limits
             .as_ref()
             .map_or(core::ptr::null(), core::ptr::from_ref);
@@ -194,6 +203,110 @@ impl Api {
                 &raw mut report,
             )
         };
+        self.decoded(status, value, report)
+    }
+
+    /// Reads a query string or an `application/x-www-form-urlencoded` body (`%XX` and `+`
+    /// decoded) as the model of `plan`, in lax mode (ABI 1.1).
+    ///
+    /// # Safety
+    ///
+    /// The thread must be attached to the interpreter. The `Decoded::Value` is a new reference the
+    /// caller must release with the interpreter attached.
+    pub unsafe fn decode_urlencoded(
+        &self,
+        plan: &Plan,
+        data: &[u8],
+        options: &PairsOptions,
+    ) -> Result<Decoded, Status> {
+        // SAFETY: forwarded; `data` is a slice and there are no pairs.
+        unsafe { self.decode_pairs_raw(plan, OX_FORMAT_URLENCODED, data, &[], options) }
+    }
+
+    /// Reads name/value pairs as they are (headers, cookies) as the model of `plan`, in lax mode
+    /// (ABI 1.1).
+    ///
+    /// # Safety
+    ///
+    /// The thread must be attached to the interpreter. The `Decoded::Value` is a new reference the
+    /// caller must release with the interpreter attached.
+    pub unsafe fn decode_pairs(
+        &self,
+        plan: &Plan,
+        pairs: &[(&str, &str)],
+        options: &PairsOptions,
+    ) -> Result<Decoded, Status> {
+        let raw: Vec<OxPair> = pairs
+            .iter()
+            .map(|(name, value)| OxPair {
+                name: OxStr::from_str(name),
+                value: OxStr::from_str(value),
+            })
+            .collect();
+        // SAFETY: forwarded; `raw` borrows from `pairs`, which outlives the call.
+        unsafe { self.decode_pairs_raw(plan, OX_FORMAT_PAIRS, &[], &raw, options) }
+    }
+
+    /// # Safety
+    ///
+    /// The thread must be attached to the interpreter; `data` and `pairs` are valid for the call.
+    unsafe fn decode_pairs_raw(
+        &self,
+        plan: &Plan,
+        format: u32,
+        data: &[u8],
+        pairs: &[OxPair],
+        options: &PairsOptions,
+    ) -> Result<Decoded, Status> {
+        let limits = options.limits;
+        let mut raw = OxPairsOptions::new();
+        if options.case_insensitive {
+            raw.flags |= OX_PAIRS_CASE_INSENSITIVE;
+        }
+        raw.max_errors = options.max_errors;
+        raw.unknown = unknown_value(options.unknown);
+        raw.limits = limits
+            .as_ref()
+            .map_or(core::ptr::null(), core::ptr::from_ref);
+        let mut value = core::ptr::null_mut();
+        let mut report = core::ptr::null_mut();
+        // The slices may be empty, and an empty slice's pointer is dangling, not null: pass null
+        // for the source that is not used, as the contract says.
+        let data_pointer = if data.is_empty() {
+            core::ptr::null()
+        } else {
+            data.as_ptr()
+        };
+        let pairs_pointer = if pairs.is_empty() {
+            core::ptr::null()
+        } else {
+            pairs.as_ptr()
+        };
+        // SAFETY: the caller guarantees an attached thread; `plan` is alive; `data` and `pairs`
+        // are slices readable for their lengths and unchanged during the call; `raw` and the
+        // limits it points to live through the call; the out pointers are valid.
+        let status = unsafe {
+            (self.table.decode_pairs)(
+                plan.pointer.as_ptr(),
+                format,
+                data_pointer,
+                data.len(),
+                pairs_pointer,
+                pairs.len(),
+                &raw const raw,
+                &raw mut value,
+                &raw mut report,
+            )
+        };
+        self.decoded(status, value, report)
+    }
+
+    fn decoded(
+        &self,
+        status: i32,
+        value: *mut OxPyObject,
+        report: *mut OxReport,
+    ) -> Result<Decoded, Status> {
         match (status, NonNull::new(value), NonNull::new(report)) {
             (OX_OK, Some(value), _) => Ok(Decoded::Value(value)),
             (OX_INVALID, _, Some(pointer)) => Ok(Decoded::Invalid(Report {
@@ -269,6 +382,14 @@ impl Api {
             }
             _ => Err(Status(status)),
         }
+    }
+}
+
+fn unknown_value(unknown: Unknown) -> u32 {
+    match unknown {
+        Unknown::Model => OX_UNKNOWN_MODEL,
+        Unknown::Ignore => OX_UNKNOWN_IGNORE,
+        Unknown::Forbid => OX_UNKNOWN_FORBID,
     }
 }
 

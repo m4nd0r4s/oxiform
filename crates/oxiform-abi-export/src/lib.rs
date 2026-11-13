@@ -9,7 +9,7 @@ mod options;
 mod report;
 
 pub use buffer::{append, check_buffer};
-pub use options::{EncodeParams, decode_options, encode_options};
+pub use options::{EncodeParams, PairsParams, decode_options, encode_options, pairs_options};
 pub use report::{
     into_report_pointer, limits_default, limits_none, report_combine, report_free,
     report_in_source, report_view, status_message,

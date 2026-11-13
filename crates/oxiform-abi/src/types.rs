@@ -69,8 +69,18 @@ pub const OX_INTERNAL: i32 = 6;
 
 // --- enumerations and flags -------------------------------------------------------------------
 
-/// The only format of ABI 1.0.
+/// The only format `decode` and `encode` read and write.
 pub const OX_FORMAT_JSON: u32 = 1;
+/// A source of `decode_pairs` (ABI 1.1): a raw query string or an
+/// `application/x-www-form-urlencoded` body in `data[..len]`, `%XX` and `+` decoded.
+pub const OX_FORMAT_URLENCODED: u32 = 2;
+/// A source of `decode_pairs` (ABI 1.1): `pair_count` [`OxPair`]s, such as headers or cookies, read
+/// as they are (no percent-decoding).
+pub const OX_FORMAT_PAIRS: u32 = 3;
+
+/// `OxPairsOptions::flags` (ABI 1.1): match names without regard to ASCII case, as header names are
+/// matched.
+pub const OX_PAIRS_CASE_INSENSITIVE: u32 = 1;
 
 /// The input must already have the type (`"42"` is not an `int`).
 pub const OX_MODE_STRICT: u32 = 0;
@@ -240,6 +250,59 @@ impl Default for OxDecodeOptions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The options of one `decode_pairs` call (ABI 1.1), size-prefixed. Pairs are always read in lax
+/// mode, so there is no `mode`. Start from [`OxPairsOptions::new`] and set what differs.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OxPairsOptions {
+    /// `size_of::<OxPairsOptions>()` of the struct the caller was built against.
+    pub struct_size: u32,
+    /// [`OX_PAIRS_CASE_INSENSITIVE`]; a bit this oxiform does not know is [`OX_UNSUPPORTED`].
+    pub flags: u32,
+    /// Issues collected before the decode stops; 0 is the default (100); 1 is "fail fast".
+    pub max_errors: u64,
+    /// Borrowed for the call, or null for the default limits. `max_bytes` bounds the whole
+    /// source, `max_items` the number of pairs and of distinct names, `max_str_len` each decoded
+    /// name and value.
+    pub limits: *const OxLimits,
+    /// [`OX_UNKNOWN_MODEL`], [`OX_UNKNOWN_IGNORE`] or [`OX_UNKNOWN_FORBID`] (OX-9).
+    pub unknown: u32,
+    pub reserved: u32,
+}
+
+impl OxPairsOptions {
+    /// The size of this struct in ABI 1.1: the least `struct_size` `decode_pairs` accepts.
+    pub const SIZE_V1_1: usize =
+        core::mem::offset_of!(OxPairsOptions, reserved) + core::mem::size_of::<u32>();
+
+    /// Case-sensitive names, default limits, `max_errors` 100, models decide on unknown names.
+    pub const fn new() -> Self {
+        Self {
+            struct_size: core::mem::size_of::<Self>() as u32,
+            flags: 0,
+            max_errors: 0,
+            limits: core::ptr::null(),
+            unknown: OX_UNKNOWN_MODEL,
+            reserved: 0,
+        }
+    }
+}
+
+impl Default for OxPairsOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One name and value of [`OX_FORMAT_PAIRS`]: UTF-8 bytes, borrowed for the call. Frozen within a
+/// major version, like [`OxStr`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OxPair {
+    pub name: OxStr,
+    pub value: OxStr,
 }
 
 /// The options of one encode call, size-prefixed.

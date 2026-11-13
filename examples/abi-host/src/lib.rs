@@ -14,13 +14,15 @@
 //! host would: odd struct sizes, flags, a context, buffers that fail.
 
 mod buffer;
+mod legacy;
 mod problem;
 
 use std::sync::OnceLock;
 
 use oxiform_abi::{
     Api, DecodeOptions, Decoded, EncodeOptions, Mode, OX_INVALID, OX_OK, OxBuffer, OxDecodeOptions,
-    OxEncodeOptions, OxLimits, Report, Status, Unknown, VecBuffer,
+    OxEncodeOptions, OxLimits, OxPair, OxPairsOptions, OxStr, PairsOptions, Report, Status,
+    Unknown, VecBuffer,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -128,6 +130,43 @@ fn decode_through_table<'py>(
             }))
         }
         Ok(Decoded::Invalid(report)) => Ok(Err(report)),
+        Err(_) => Err(PyErr::fetch(py)),
+    }
+}
+
+fn pairs_options(
+    case_insensitive: bool,
+    max_errors: u64,
+    limits: Option<&Bound<'_, PyDict>>,
+    unknown: &str,
+) -> PyResult<PairsOptions> {
+    Ok(PairsOptions {
+        case_insensitive,
+        max_errors,
+        limits: limits_of(limits)?,
+        unknown: unknown_of(unknown)?,
+    })
+}
+
+/// The value of a `decode_pairs` call, or the problem the host builds from its report.
+fn finish_pairs<'py>(
+    py: Python<'py>,
+    decoded: Result<Decoded, Status>,
+    source: Option<&str>,
+) -> PyResult<Bound<'py, PyAny>> {
+    match decoded {
+        // SAFETY: the table gave us one new reference, which the `Bound` now owns.
+        Ok(Decoded::Value(value)) => {
+            Ok(unsafe { Bound::from_owned_ptr(py, value.as_ptr().cast()) })
+        }
+        Ok(Decoded::Invalid(mut report)) => {
+            if let Some(source) = source {
+                report
+                    .in_source(source)
+                    .map_err(|status| PyValueError::new_err(api().status_message(status)))?;
+            }
+            Err(HostProblem::new_err(problem_of(py, &report)?))
+        }
         Err(_) => Err(PyErr::fetch(py)),
     }
 }
@@ -246,6 +285,154 @@ impl Plan {
         } else {
             // SAFETY: a report the table gave us, which `Report`-like ownership frees; the safe
             // layer's `Report` is built for this through `combine`, so free it through the table.
+            let view =
+                unsafe { oxiform_abi::ReportView::from_raw(&*(api().table().report_view)(report)) };
+            let problem = problem::problem_from_view(py, &view)?;
+            // SAFETY: frees the report once.
+            unsafe { (api().table().report_free)(report) };
+            Some(problem)
+        };
+        PyTuple::new(
+            py,
+            [
+                status.into_pyobject(py)?.into_any(),
+                value.unwrap_or_else(|| py.None().into_bound(py)),
+                problem.map_or_else(|| py.None().into_bound(py), |p| p.into_bound(py).into_any()),
+                error.map_or_else(|| py.None().into_bound(py), |e| e.into_bound(py).into_any()),
+            ],
+        )
+    }
+
+    /// Reads a query string or a form body (bytes) as the model of this plan, in lax mode
+    /// (`decode_pairs` of ABI 1.1). Invalid input raises `HostProblem`.
+    #[pyo3(signature = (data, *, max_errors = 0, limits = None, unknown = "model", source = None))]
+    fn decode_urlencoded<'py>(
+        &self,
+        py: Python<'py>,
+        data: &Bound<'py, PyAny>,
+        max_errors: u64,
+        limits: Option<&Bound<'py, PyDict>>,
+        unknown: &str,
+        source: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options = pairs_options(false, max_errors, limits, unknown)?;
+        let bytes = bytes_of(data)?;
+        // SAFETY: this thread is attached (PyO3 gave us `py`).
+        let decoded = unsafe { api().decode_urlencoded(&self.plan, bytes, &options) };
+        finish_pairs(py, decoded, source)
+    }
+
+    /// Reads `[(name, value)]` of `str` as the model of this plan, in lax mode (`decode_pairs` of
+    /// ABI 1.1): headers and cookies. Invalid input raises `HostProblem`.
+    #[pyo3(signature = (pairs, *, case_insensitive = false, max_errors = 0, limits = None, unknown = "model", source = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn decode_pairs<'py>(
+        &self,
+        py: Python<'py>,
+        pairs: Vec<(String, String)>,
+        case_insensitive: bool,
+        max_errors: u64,
+        limits: Option<&Bound<'py, PyDict>>,
+        unknown: &str,
+        source: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options = pairs_options(case_insensitive, max_errors, limits, unknown)?;
+        let views: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        // SAFETY: this thread is attached (PyO3 gave us `py`).
+        let decoded = unsafe { api().decode_pairs(&self.plan, &views, &options) };
+        finish_pairs(py, decoded, source)
+    }
+
+    /// `decode_pairs` without the safe layer, as a C host calls it: `(status, value, problem,
+    /// error)`. `pairs` is `[(name, value)]` of bytes; `struct_size` and `extra` change the size the
+    /// options claim (`extra` bytes of fields of a later minor follow, set to ones); `null_pairs`
+    /// and `null_data` pass a NULL pointer for the source that is read.
+    #[pyo3(signature = (*, data = None, pairs = None, format = 2, flags = 0, max_errors = 0, unknown = 0, struct_size = None, extra = 0, null_options = false, null_source = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn decode_pairs_raw<'py>(
+        &self,
+        py: Python<'py>,
+        data: Option<&Bound<'py, PyBytes>>,
+        pairs: Option<Vec<(Vec<u8>, Vec<u8>)>>,
+        format: u32,
+        flags: u32,
+        max_errors: u64,
+        unknown: u32,
+        struct_size: Option<u32>,
+        extra: usize,
+        null_options: bool,
+        null_source: bool,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let mut raw = OxPairsOptions::new();
+        raw.flags = flags;
+        raw.max_errors = max_errors;
+        raw.unknown = unknown;
+        let total = size_of::<OxPairsOptions>() + extra;
+        raw.struct_size = struct_size.unwrap_or(total as u32);
+        let mut storage = vec![u64::MAX; total.div_ceil(8)];
+        let options = storage.as_mut_ptr().cast::<OxPairsOptions>();
+        // SAFETY: `storage` is aligned to 8 and holds `total >= size_of::<OxPairsOptions>()` bytes.
+        unsafe { options.write(raw) };
+        let bytes = data.map_or(&[][..], |data| data.as_bytes());
+        let views: Vec<OxPair> = pairs
+            .iter()
+            .flatten()
+            .map(|(name, value)| OxPair {
+                name: OxStr {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                },
+                value: OxStr {
+                    ptr: value.as_ptr(),
+                    len: value.len(),
+                },
+            })
+            .collect();
+        let mut value = core::ptr::null_mut();
+        let mut report = core::ptr::null_mut();
+        let source_data = if data.is_some() && !null_source {
+            bytes.as_ptr()
+        } else {
+            core::ptr::null()
+        };
+        let source_pairs = if pairs.is_some() && !null_source {
+            views.as_ptr()
+        } else {
+            core::ptr::null()
+        };
+        // SAFETY: this thread is attached; the plan is alive; the slices and options live through
+        // the call; the out pointers are valid.
+        let status = unsafe {
+            (api().table().decode_pairs)(
+                self.plan.as_ptr(),
+                format,
+                source_data,
+                if data.is_some() { bytes.len() } else { 0 },
+                source_pairs,
+                if pairs.is_some() { views.len() } else { 0 },
+                if null_options {
+                    core::ptr::null()
+                } else {
+                    options
+                },
+                &raw mut value,
+                &raw mut report,
+            )
+        };
+        let error = PyErr::take(py).map(|error| error.into_value(py));
+        let value = if value.is_null() {
+            None
+        } else {
+            // SAFETY: a new reference the table gave us.
+            Some(unsafe { Bound::from_owned_ptr(py, value.cast()) })
+        };
+        let problem = if report.is_null() {
+            None
+        } else {
+            // SAFETY: a report the table gave us.
             let view =
                 unsafe { oxiform_abi::ReportView::from_raw(&*(api().table().report_view)(report)) };
             let problem = problem::problem_from_view(py, &view)?;
@@ -518,6 +705,9 @@ fn oxiform_abi_host(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(encode, module)?)?;
     module.add_function(wrap_pyfunction!(encode_raw, module)?)?;
     module.add_function(wrap_pyfunction!(abi_version, module)?)?;
+    module.add_function(wrap_pyfunction!(legacy::legacy_decode, module)?)?;
+    module.add_function(wrap_pyfunction!(legacy::legacy_check, module)?)?;
+    module.add_function(wrap_pyfunction!(legacy::legacy_table_size, module)?)?;
     module.add_function(wrap_pyfunction!(import_as, module)?)?;
     module.add_function(wrap_pyfunction!(status_message, module)?)?;
     module.add_function(wrap_pyfunction!(limits, module)?)?;

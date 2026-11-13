@@ -137,7 +137,7 @@ pub(crate) fn decode_bytes<'py>(
 
 /// The bytes of the input. `bytes` and `str` are borrowed; anything else that exposes a
 /// buffer is copied first, since Python code may change it while it is read.
-fn read_input<'data>(data: &'data Bound<'_, PyAny>) -> PyResult<Cow<'data, [u8]>> {
+pub(crate) fn read_input<'data>(data: &'data Bound<'_, PyAny>) -> PyResult<Cow<'data, [u8]>> {
     if let Ok(bytes) = data.cast::<PyBytes>() {
         return Ok(Cow::Borrowed(bytes.as_bytes()));
     }

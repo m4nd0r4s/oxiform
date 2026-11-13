@@ -4,15 +4,15 @@ use core::ffi::CStr;
 use core::fmt;
 
 use crate::types::{
-    OxBuffer, OxDecodeOptions, OxEncodeOptions, OxLimits, OxPlan, OxPyObject, OxReport,
-    OxReportPart, OxReportView, OxStr,
+    OxBuffer, OxDecodeOptions, OxEncodeOptions, OxLimits, OxPair, OxPairsOptions, OxPlan,
+    OxPyObject, OxReport, OxReportPart, OxReportView, OxStr,
 };
 
 /// Incompatible changes bump the major version: a host built for major N refuses another.
 pub const ABI_MAJOR: u32 = 1;
 /// Additive changes (a new function at the end of the table, a new field at the end of a struct)
 /// bump the minor version. A host built for minor M needs an oxiform that exports at least M.
-pub const ABI_MINOR: u32 = 0;
+pub const ABI_MINOR: u32 = 1;
 
 /// The module that exports the capsules.
 pub const MODULE: &str = "oxiform._oxiform";
@@ -128,7 +128,38 @@ pub struct OxiformApi {
     ) -> i32,
     /// Frees a report. Any thread; null is a no-op.
     pub report_free: unsafe extern "C" fn(report: *mut OxReport),
+
+    // --- ABI 1.1: everything below was added at the end of the table. A host built for 1.0 never
+    // reads past `report_free`, and a host built for 1.1 refuses an oxiform that exports 1.0.
+    /// *Attached.* Reads a source of pairs (OX-3) as the model of `plan`, in lax mode, with
+    /// `options` (null: the defaults).
+    ///
+    /// With [`crate::OX_FORMAT_URLENCODED`] the source is the query string or form body
+    /// `data[..len]` (`%XX` and `+` decoded, UTF-8 strictly; `pairs` must be null and `pair_count`
+    /// 0). With [`crate::OX_FORMAT_PAIRS`] it is the `pair_count` pairs at `pairs`, read as they
+    /// are (headers, cookies; `data` must be null and `len` 0). A name that is repeated gives its
+    /// values in order to a field that is a list, a tuple or a set, and is a `duplicate_key` issue
+    /// for any other field. `plan` must be the plan of a model: anything else is
+    /// [`crate::OX_INVALID_ARGUMENT`]. Memory, results and statuses are those of `decode`;
+    /// the issues name the wire name of the field (`/page`), ready for `report_in_source`.
+    pub decode_pairs: unsafe extern "C" fn(
+        plan: *const OxPlan,
+        format: u32,
+        data: *const u8,
+        len: usize,
+        pairs: *const OxPair,
+        pair_count: usize,
+        options: *const OxPairsOptions,
+        out_value: *mut *mut OxPyObject,
+        out_report: *mut *mut OxReport,
+    ) -> i32,
 }
+
+/// The size of the table in ABI 1.0, up to and including `report_free`: the least a table can be
+/// for a host built for 1.0 (which is also the size of the 1.0 table, so that table is a prefix
+/// of this one).
+pub const API_SIZE_V1_0: usize = core::mem::offset_of!(OxiformApi, report_free)
+    + size_of::<unsafe extern "C" fn(*mut OxReport)>();
 
 /// Why a host cannot use the installed oxiform.
 #[derive(Debug, Clone, PartialEq, Eq)]

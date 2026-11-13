@@ -80,6 +80,209 @@ mod tests {
         assert_eq!(check_header(header(1, 0, 400), 1, 0, 400), Ok(()));
     }
 
+    /// The table of ABI 1.0 as it was released, field by field: the 1.1 table must start with it.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct TableV1_0 {
+        header: OxiformApiHeader,
+        oxiform_version: OxStr,
+        status_message: unsafe extern "C" fn(i32) -> OxStr,
+        limits_default: unsafe extern "C" fn(*mut OxLimits) -> i32,
+        limits_none: unsafe extern "C" fn(*mut OxLimits) -> i32,
+        plan_for: unsafe extern "C" fn(*mut OxPyObject, *mut *mut OxPlan) -> i32,
+        plan_retain: unsafe extern "C" fn(*const OxPlan),
+        plan_release: unsafe extern "C" fn(*const OxPlan),
+        plan_target: unsafe extern "C" fn(*const OxPlan) -> *mut OxPyObject,
+        decode: unsafe extern "C" fn(
+            *const OxPlan,
+            u32,
+            *const u8,
+            usize,
+            *const OxDecodeOptions,
+            *mut *mut OxPyObject,
+            *mut *mut OxReport,
+        ) -> i32,
+        encode: unsafe extern "C" fn(
+            u32,
+            *mut OxPyObject,
+            *const OxPlan,
+            *const OxEncodeOptions,
+            *mut OxBuffer,
+        ) -> i32,
+        report_view: unsafe extern "C" fn(*const OxReport) -> *const OxReportView,
+        report_in_source: unsafe extern "C" fn(*mut OxReport, OxStr) -> i32,
+        report_combine:
+            unsafe extern "C" fn(*const OxReportPart, usize, u64, *mut *mut OxReport) -> i32,
+        report_free: unsafe extern "C" fn(*mut OxReport),
+    }
+
+    #[test]
+    fn the_table_of_abi_1_1_starts_with_the_table_of_abi_1_0_unchanged() {
+        use core::mem::offset_of;
+        macro_rules! same_offset {
+            ($($field:ident),*) => {$(
+                assert_eq!(
+                    offset_of!(OxiformApi, $field),
+                    offset_of!(TableV1_0, $field),
+                    stringify!($field)
+                );
+            )*};
+        }
+        same_offset!(
+            oxiform_version,
+            status_message,
+            limits_default,
+            limits_none,
+            plan_for,
+            plan_retain,
+            plan_release,
+            plan_target,
+            decode,
+            encode,
+            report_view,
+            report_in_source,
+            report_combine,
+            report_free
+        );
+        assert_eq!(
+            offset_of!(OxiformApi, abi_major),
+            offset_of!(TableV1_0, header)
+        );
+        assert_eq!(size_of::<TableV1_0>(), API_SIZE_V1_0);
+        assert!(size_of::<OxiformApi>() > API_SIZE_V1_0);
+        // What was added in 1.1 is appended after the last function of 1.0.
+        assert_eq!(offset_of!(OxiformApi, decode_pairs), API_SIZE_V1_0);
+        assert_eq!(ABI_MINOR, 1);
+    }
+
+    #[test]
+    fn a_host_built_for_1_0_accepts_a_1_1_table_and_a_1_0_table() {
+        // The 1.0 host checks (1, 0) against the size of the table it was built with.
+        assert_eq!(
+            check_header(header(1, 1, size_of::<OxiformApi>()), 1, 0, API_SIZE_V1_0),
+            Ok(())
+        );
+        assert_eq!(
+            check_header(header(1, 0, API_SIZE_V1_0), 1, 0, API_SIZE_V1_0),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_host_built_for_1_1_refuses_a_1_0_oxiform_and_says_to_upgrade() {
+        let error =
+            check_header(header(1, 0, API_SIZE_V1_0), 1, 1, size_of::<OxiformApi>()).unwrap_err();
+        assert_eq!(
+            error,
+            VersionError::Minor {
+                wanted: (1, 1),
+                found: (1, 0)
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "this extension needs oxiform ABI 1.1 or newer, but the installed oxiform exports ABI 1.0; upgrade oxiform"
+        );
+        // A table that claims 1.1 but is the short one is refused by size, not read past its end.
+        let short = check_header(header(1, 1, API_SIZE_V1_0), 1, 1, size_of::<OxiformApi>());
+        assert!(matches!(short, Err(VersionError::Size { .. })));
+    }
+
+    #[test]
+    fn a_host_built_for_1_0_reads_a_synthetic_1_0_table_through_its_own_struct() {
+        // A table as oxiform 1.0 exported it: shorter than ours, never read past its end.
+        unsafe extern "C" fn message(_: i32) -> OxStr {
+            OxStr::from_str("ok")
+        }
+        unsafe extern "C" fn limits(_: *mut OxLimits) -> i32 {
+            0
+        }
+        unsafe extern "C" fn plan_for(_: *mut OxPyObject, _: *mut *mut OxPlan) -> i32 {
+            0
+        }
+        unsafe extern "C" fn plan_retain(_: *const OxPlan) {}
+        unsafe extern "C" fn plan_target(_: *const OxPlan) -> *mut OxPyObject {
+            core::ptr::null_mut()
+        }
+        unsafe extern "C" fn decode(
+            _: *const OxPlan,
+            _: u32,
+            _: *const u8,
+            _: usize,
+            _: *const OxDecodeOptions,
+            _: *mut *mut OxPyObject,
+            _: *mut *mut OxReport,
+        ) -> i32 {
+            7
+        }
+        unsafe extern "C" fn encode(
+            _: u32,
+            _: *mut OxPyObject,
+            _: *const OxPlan,
+            _: *const OxEncodeOptions,
+            _: *mut OxBuffer,
+        ) -> i32 {
+            0
+        }
+        unsafe extern "C" fn report_view(_: *const OxReport) -> *const OxReportView {
+            core::ptr::null()
+        }
+        unsafe extern "C" fn report_in_source(_: *mut OxReport, _: OxStr) -> i32 {
+            0
+        }
+        unsafe extern "C" fn report_combine(
+            _: *const OxReportPart,
+            _: usize,
+            _: u64,
+            _: *mut *mut OxReport,
+        ) -> i32 {
+            0
+        }
+        unsafe extern "C" fn report_free(_: *mut OxReport) {}
+        let table = TableV1_0 {
+            header: header(1, 0, size_of::<TableV1_0>()),
+            oxiform_version: OxStr::from_str("0.0.1"),
+            status_message: message,
+            limits_default: limits,
+            limits_none: limits,
+            plan_for,
+            plan_retain,
+            plan_release: plan_retain,
+            plan_target,
+            decode,
+            encode,
+            report_view,
+            report_in_source,
+            report_combine,
+            report_free,
+        };
+        let pointer = core::ptr::from_ref(&table).cast::<OxiformApiHeader>();
+        // SAFETY: `pointer` points to a table that starts with a header and is `struct_size` long.
+        let found = unsafe { pointer.read() };
+        assert_eq!(check_header(found, 1, 0, size_of::<TableV1_0>()), Ok(()));
+        // A host of 1.0 casts to its own struct and calls through it.
+        // SAFETY: the table is a `TableV1_0`, which is what the check above established.
+        let legacy = unsafe { &*pointer.cast::<TableV1_0>() };
+        // SAFETY: `decode` of this table ignores its arguments.
+        let status = unsafe {
+            (legacy.decode)(
+                core::ptr::null(),
+                OX_FORMAT_JSON,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, 7);
+        // A 1.1 host refuses that table, and `table_from_pointer` does not hand out a reference
+        // to a table that is shorter than the one this crate describes.
+        // SAFETY: `pointer` is readable as a header; it is refused before anything else is read.
+        let refused = unsafe { table_from_pointer(pointer, 1, 1) };
+        assert!(matches!(refused, Err(VersionError::Minor { .. })));
+    }
+
     #[test]
     fn a_newer_minor_and_a_longer_table_are_accepted() {
         assert_eq!(check_header(header(1, 3, 600), 1, 1, 400), Ok(()));

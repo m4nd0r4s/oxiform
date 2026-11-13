@@ -14,8 +14,10 @@ pub struct TooSmall {
 /// Implementors are `#[repr(C)]` with `struct_size: u32` as the first field, and every bit pattern of
 /// every field is valid (integers, floats, raw pointers and `Option` of function pointers only).
 pub unsafe trait SizePrefixed: Copy {
-    /// The size of the struct in ABI 1.0, the least a caller may pass.
-    const SIZE_V1_0: usize;
+    /// The size of the struct when it first appeared, the least a caller may pass.
+    const MIN_SIZE: usize;
+    /// The ABI version that defined the struct, for the message of a size that is too small.
+    const SINCE: &'static str;
 
     /// The defaults a field the caller does not know of keeps.
     fn defaults() -> Self;
@@ -33,10 +35,10 @@ pub unsafe fn read_prefixed<T: SizePrefixed>(pointer: *const T) -> Result<T, Too
     // SAFETY: the caller guarantees the first four bytes, the `u32` `struct_size`, are readable
     // and `pointer` is aligned (which a `u32` at offset 0 is too).
     let given = unsafe { pointer.cast::<u32>().read() } as usize;
-    if given < T::SIZE_V1_0 {
+    if given < T::MIN_SIZE {
         return Err(TooSmall {
             given,
-            needed: T::SIZE_V1_0,
+            needed: T::MIN_SIZE,
         });
     }
     let mut value = T::defaults();
@@ -55,11 +57,12 @@ pub unsafe fn read_prefixed<T: SizePrefixed>(pointer: *const T) -> Result<T, Too
 }
 
 macro_rules! prefixed {
-    ($type:ty, $defaults:expr) => {
+    ($type:ty, $size:expr, $since:literal, $defaults:expr) => {
         // SAFETY: `#[repr(C)]`, `struct_size: u32` first, and only integers, floats, raw
         // pointers and `Option` of function pointers as fields.
         unsafe impl SizePrefixed for $type {
-            const SIZE_V1_0: usize = <$type>::SIZE_V1_0;
+            const MIN_SIZE: usize = $size;
+            const SINCE: &'static str = $since;
             fn defaults() -> Self {
                 $defaults
             }
@@ -67,11 +70,34 @@ macro_rules! prefixed {
     };
 }
 
-prefixed!(crate::OxLimits, crate::OxLimits::zeroed());
-prefixed!(crate::OxDecodeOptions, crate::OxDecodeOptions::new());
-prefixed!(crate::OxEncodeOptions, crate::OxEncodeOptions::new());
+prefixed!(
+    crate::OxLimits,
+    crate::OxLimits::SIZE_V1_0,
+    "1.0",
+    crate::OxLimits::zeroed()
+);
+prefixed!(
+    crate::OxDecodeOptions,
+    crate::OxDecodeOptions::SIZE_V1_0,
+    "1.0",
+    crate::OxDecodeOptions::new()
+);
+prefixed!(
+    crate::OxEncodeOptions,
+    crate::OxEncodeOptions::SIZE_V1_0,
+    "1.0",
+    crate::OxEncodeOptions::new()
+);
+prefixed!(
+    crate::OxPairsOptions,
+    crate::OxPairsOptions::SIZE_V1_1,
+    "1.1",
+    crate::OxPairsOptions::new()
+);
 prefixed!(
     crate::OxBuffer,
+    crate::OxBuffer::SIZE_V1_0,
+    "1.0",
     crate::OxBuffer {
         struct_size: size_of::<crate::OxBuffer>() as u32,
         reserved: 0,

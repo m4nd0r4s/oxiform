@@ -765,3 +765,116 @@ fn a_bad_buffer_is_checked_before_any_work() {
     // SAFETY: null is refused.
     assert!(unsafe { check_buffer(core::ptr::null_mut()) }.is_err());
 }
+
+// --- decode_pairs (ABI 1.1) ---------------------------------------------------------------
+
+#[test]
+fn pairs_options_default_to_lax_case_sensitive_with_the_default_limits() {
+    // SAFETY: a null pointer is the defaults.
+    let params = unsafe { pairs_options(core::ptr::null()) }.unwrap();
+    assert_eq!(params.options.mode, oxiform_core::options::Mode::Lax);
+    assert!(!params.case_insensitive);
+    assert_eq!(params.options.max_errors, 100);
+    assert_eq!(params.options.unknown, None);
+}
+
+#[test]
+fn pairs_options_cover_every_field() {
+    let mut limits = OxLimits::zeroed();
+    limits.max_items = 5;
+    limits.max_str_len = 9;
+    let mut raw = OxPairsOptions::new();
+    raw.flags = OX_PAIRS_CASE_INSENSITIVE;
+    raw.max_errors = 3;
+    raw.unknown = OX_UNKNOWN_FORBID;
+    raw.limits = &raw const limits;
+    // SAFETY: `raw` and the limits it points to are valid structs that live through the call.
+    let params = unsafe { pairs_options(&raw const raw) }.unwrap();
+    assert!(params.case_insensitive);
+    assert_eq!(params.options.max_errors, 3);
+    assert_eq!(
+        params.options.unknown,
+        Some(oxiform_core::description::UnknownFields::Forbid)
+    );
+    assert_eq!(params.options.limits.max_items, 5);
+    assert_eq!(params.options.limits.max_str_len, 9);
+    assert_eq!(
+        params.options.limits.max_bytes,
+        oxiform_core::limits::Limits::DEFAULT.max_bytes,
+        "0 in a field is its default"
+    );
+}
+
+#[test]
+fn pairs_options_of_a_later_minor_are_read_up_to_what_this_oxiform_knows() {
+    #[repr(C)]
+    struct Future {
+        known: OxPairsOptions,
+        added_later: [u64; 4],
+    }
+    let mut future = Future {
+        known: OxPairsOptions::new(),
+        added_later: [u64::MAX; 4],
+    };
+    future.known.struct_size = size_of::<Future>() as u32;
+    future.known.flags = OX_PAIRS_CASE_INSENSITIVE;
+    // SAFETY: the struct starts with a valid `OxPairsOptions` and `struct_size` is its real size.
+    let params = unsafe { pairs_options(&raw const future.known) }.unwrap();
+    assert!(params.case_insensitive);
+}
+
+#[test]
+fn pairs_options_refuse_what_they_cannot_honour_and_say_what_to_do() {
+    let mut raw = OxPairsOptions::new();
+    raw.struct_size = (OxPairsOptions::SIZE_V1_1 - 1) as u32;
+    // SAFETY: a valid struct; only its first four bytes are trusted before the check.
+    let error = unsafe { pairs_options(&raw const raw) }.unwrap_err();
+    assert_eq!(error.status, OX_INVALID_ARGUMENT);
+    assert!(error.message.contains("ABI 1.1"), "{}", error.message);
+    assert!(
+        error.message.contains("set struct_size"),
+        "{}",
+        error.message
+    );
+
+    let mut raw = OxPairsOptions::new();
+    raw.flags = 0x80;
+    // SAFETY: a valid struct.
+    let error = unsafe { pairs_options(&raw const raw) }.unwrap_err();
+    assert_eq!(error.status, OX_UNSUPPORTED);
+    assert!(
+        error.message.contains("upgrade oxiform"),
+        "{}",
+        error.message
+    );
+
+    let mut raw = OxPairsOptions::new();
+    raw.unknown = 9;
+    // SAFETY: a valid struct.
+    let error = unsafe { pairs_options(&raw const raw) }.unwrap_err();
+    assert_eq!(error.status, OX_INVALID_ARGUMENT);
+
+    let mut limits = OxLimits::zeroed();
+    limits.struct_size = 4;
+    let mut raw = OxPairsOptions::new();
+    raw.limits = &raw const limits;
+    // SAFETY: valid structs; only the first four bytes of the limits are trusted before the check.
+    let error = unsafe { pairs_options(&raw const raw) }.unwrap_err();
+    assert!(
+        error.message.contains("limits.struct_size is 4"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn the_pair_and_the_options_of_abi_1_1_have_the_layout_a_host_builds() {
+    assert_eq!(size_of::<OxPair>(), 2 * size_of::<OxStr>());
+    assert_eq!(core::mem::offset_of!(OxPairsOptions, struct_size), 0);
+    assert_eq!(
+        OxPairsOptions::new().struct_size as usize,
+        size_of::<OxPairsOptions>()
+    );
+    assert_eq!(OX_FORMAT_JSON, 1);
+    assert_eq!((OX_FORMAT_URLENCODED, OX_FORMAT_PAIRS), (2, 3));
+}

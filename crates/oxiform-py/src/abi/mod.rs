@@ -41,6 +41,7 @@ static TABLE: Table = Table(OxiformApi {
     report_in_source: oxiform_abi_export::report_in_source,
     report_combine: oxiform_abi_export::report_combine,
     report_free: oxiform_abi_export::report_free,
+    decode_pairs: calls::decode_pairs,
 });
 
 /// Adds the capsule, and the versions it can be asked for, to the module.
