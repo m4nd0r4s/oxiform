@@ -30,7 +30,17 @@ from oxiform._naive import NAIVE
 from oxiform.errors import SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
-__all__ = ["UnresolvedAnnotationError", "describe"]
+__all__ = [
+    "BARE_COLLECTIONS",
+    "TEMPORAL_KINDS",
+    "UnresolvedAnnotationError",
+    "describe",
+    "flattened_class",
+    "is_enum",
+    "is_flag",
+    "type_hints",
+    "unwrap_annotated",
+]
 
 
 class UnresolvedAnnotationError(SchemaError):
@@ -69,7 +79,7 @@ class _DescriptionBuilder:
     def type_of(
         self, annotation: object, location: str, outer: ConstraintValues
     ) -> TypeDescription:
-        annotation, constraints, mode, naive = _unwrap_annotated(annotation, location, outer)
+        annotation, constraints, mode, naive = unwrap_annotated(annotation, location, outer)
         if naive:
             if annotation is not datetime.datetime:
                 raise SchemaError(f"{location}: ox.NaiveDateTime applies to datetime only")
@@ -92,11 +102,11 @@ class _DescriptionBuilder:
             return ("str", constraints)
         if annotation is bytes or annotation is bytearray:
             return ("bytes", annotation is bytearray, constraints)
-        if annotation in _TEMPORAL:
-            kind = _TEMPORAL[annotation]
+        if annotation in TEMPORAL_KINDS:
+            kind = TEMPORAL_KINDS[annotation]
             return self._without_constraints(("temporal", kind), kind, constraints, location)
         conversion = conversion_of(annotation)
-        if conversion is None and _is_flag(annotation):
+        if conversion is None and is_flag(annotation):
             conversion = flag_conversion(annotation)
         if conversion is not None:
             index = self._conversion_index(annotation, conversion)
@@ -105,9 +115,9 @@ class _DescriptionBuilder:
             )
         if annotation is list:
             return ("list", ("any",), constraints)
-        if annotation in _BARE_COLLECTIONS:
-            return ("collection", _BARE_COLLECTIONS[annotation], ("any",), constraints)
-        if _is_enum(annotation):
+        if annotation in BARE_COLLECTIONS:
+            return ("collection", BARE_COLLECTIONS[annotation], ("any",), constraints)
+        if is_enum(annotation):
             index = self._choice_index(annotation, lambda: enum_choice(annotation, location))
             return self._without_constraints(
                 ("choice", index), annotation.__qualname__, constraints, location
@@ -134,7 +144,7 @@ class _DescriptionBuilder:
             items_type = self.type_of(items, location, {})
             if not _hashable(items_type):
                 raise SchemaError(f"{location}: set items must be hashable, not {items!r}")
-            return ("collection", _BARE_COLLECTIONS[origin], items_type, constraints)
+            return ("collection", BARE_COLLECTIONS[origin], items_type, constraints)
         if origin is dict:
             keys, values = arguments
             if keys is not str:
@@ -245,7 +255,7 @@ class _DescriptionBuilder:
     ) -> Layout:
         """The layout of ``cls``, adding the fields it reads to ``fields``. ``flattening`` holds
         the classes whose fields are being read at this level, to catch cycles."""
-        hints = _type_hints(cls)
+        hints = type_hints(cls)
         model = model_options(cls)
         members: list[Member] = []
         for field in dataclasses.fields(cls):
@@ -258,7 +268,7 @@ class _DescriptionBuilder:
                 continue
             annotation = hints[field.name]
             if options.flatten:
-                inner = _flattened_class(annotation, location)
+                inner = flattened_class(annotation, location)
                 if inner is cls or inner in flattening:
                     raise SchemaError(f"{location}: a model cannot flatten itself")
                 inner_layout = self._layout(inner, fields, (*flattening, cls))
@@ -283,22 +293,22 @@ def _with_types(values: tuple[object, ...]) -> tuple[tuple[type, object], ...]:
     return tuple((type(value), value) for value in values)
 
 
-def _is_enum(annotation: object) -> TypeGuard[type[enum.Enum]]:
+def is_enum(annotation: object) -> TypeGuard[type[enum.Enum]]:
     return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
 
 
-def _is_flag(annotation: object) -> TypeGuard[type[enum.Flag]]:
+def is_flag(annotation: object) -> TypeGuard[type[enum.Flag]]:
     return isinstance(annotation, type) and issubclass(annotation, enum.Flag)
 
 
-_TEMPORAL: dict[object, TemporalKind] = {
+TEMPORAL_KINDS: dict[object, TemporalKind] = {
     datetime.datetime: "datetime",
     datetime.date: "date",
     datetime.time: "time",
     datetime.timedelta: "timedelta",
 }
 
-_BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
+BARE_COLLECTIONS: dict[object, Literal["tuple", "set", "frozenset"]] = {
     tuple: "tuple",
     set: "set",
     frozenset: "frozenset",
@@ -316,7 +326,7 @@ def _hashable(description: TypeDescription) -> bool:
             return True
 
 
-def _type_hints(cls: type) -> dict[str, object]:
+def type_hints(cls: type) -> dict[str, object]:
     try:
         return typing.get_type_hints(cls, include_extras=True)
     except NameError as error:
@@ -324,7 +334,7 @@ def _type_hints(cls: type) -> dict[str, object]:
         raise UnresolvedAnnotationError(message) from error
 
 
-def _flattened_class(annotation: object, location: str) -> type:
+def flattened_class(annotation: object, location: str) -> type:
     if typing.get_origin(annotation) is Annotated:
         raise SchemaError(f"{location}: a flattened field cannot be constrained")
     if not isinstance(annotation, type) or not dataclasses.is_dataclass(annotation):
@@ -332,7 +342,7 @@ def _flattened_class(annotation: object, location: str) -> type:
     return annotation
 
 
-def _unwrap_annotated(
+def unwrap_annotated(
     annotation: object, location: str, outer: ConstraintValues
 ) -> tuple[object, ConstraintValues, UnionMode | None, bool]:
     """The annotated type, its constraints merged with those of enclosing ``Annotated``, how it
