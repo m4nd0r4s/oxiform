@@ -110,14 +110,15 @@ def host_problem(plan: Any, data: bytes, **options: Any) -> dict[str, Any]:
 
 
 def test_the_capsule_has_a_released_shaped_version() -> None:
-    assert _oxiform.ABI_VERSION == (1, 0)
+    assert _oxiform.ABI_VERSION == (1, 1)
     assert _oxiform._ABI_MAJORS == (1,)  # pyright: ignore[reportPrivateUsage]
     assert type(_oxiform._ABI_V1).__name__ == "PyCapsule"  # pyright: ignore[reportPrivateUsage]
-    assert host.abi_version() == (1, 0, _oxiform.__version__)
+    assert host.abi_version() == (1, 1, _oxiform.__version__)
 
 
 def test_a_host_built_for_the_same_or_an_older_minor_is_accepted() -> None:
-    assert host.import_as(1, 0) == (1, 0)
+    assert host.import_as(1, 0) == (1, 1)
+    assert host.import_as(1, 1) == (1, 1)
 
 
 @pytest.mark.parametrize("major", [0, 2, 7])
@@ -132,7 +133,7 @@ def test_a_host_built_for_another_major_refuses_with_what_to_install(major: int)
 
 def test_a_host_built_for_a_newer_minor_refuses_and_says_to_upgrade() -> None:
     with pytest.raises(
-        ImportError, match="needs oxiform ABI 1.99 or newer.*exports ABI 1.0.*upgrade"
+        ImportError, match="needs oxiform ABI 1.99 or newer.*exports ABI 1.1.*upgrade"
     ):
         host.import_as(1, 99)
 
@@ -717,3 +718,213 @@ def test_plans_alive_at_interpreter_exit_do_not_crash_it() -> None:
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert (done.returncode, done.stdout.strip(), done.stderr) == (0, "1", "")
+
+
+# --- decode_pairs (ABI 1.1, OX-3) --------------------------------------------------------------
+
+
+@ox.model
+class PairsQuery:
+    page: Annotated[int, ox.Ge(1)] = 1
+    q: str | None = None
+    tags: list[str] = ox.field(default_factory=list)
+    ids: tuple[int, ...] = ()
+
+
+@ox.model
+class PairsHeaders:
+    request_id: int = ox.field(rename="X-Request-Id")
+    accept: list[str] = ox.field(default_factory=list, rename="Accept")
+
+
+OX_FORMAT_URLENCODED, OX_FORMAT_PAIRS = 2, 3
+OX_PAIRS_CASE_INSENSITIVE = 1
+
+
+def pairs_problem(call: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    with pytest.raises(host.HostProblem) as raised:
+        call(*args, **kwargs)
+    return raised.value.args[0]
+
+
+def test_a_query_string_decoded_through_the_abi_is_what_the_python_api_gives() -> None:
+    plan = host.plan_for(PairsQuery)
+    query = "page=3&q=a+b%20c&tags=x&tags=y&ids=1&ids=2"
+    assert plan.decode_urlencoded(query.encode()) == ox.urlencoded.decode(query, PairsQuery)
+    assert plan.decode_urlencoded(b"").page == 1
+
+
+def test_pairs_decoded_through_the_abi_are_what_the_python_api_gives() -> None:
+    plan = host.plan_for(PairsHeaders)
+    pairs = [("x-request-id", "7"), ("ACCEPT", "a"), ("accept", "b")]
+    decoded = plan.decode_pairs(pairs, case_insensitive=True)
+    assert decoded == ox.pairs.decode(pairs, PairsHeaders, case_insensitive=True)
+    assert decoded.accept == ["a", "b"]
+    assert pairs_problem(plan.decode_pairs, pairs)["errors"][0]["code"] == "missing"
+
+
+def test_the_problems_of_pairs_equal_the_python_errors_and_take_a_source() -> None:
+    plan = host.plan_for(PairsQuery)
+    query = "page=0&page=1&ids=x&utm=1"
+    problem = pairs_problem(
+        plan.decode_urlencoded, query.encode(), unknown="forbid", source="query"
+    )
+    with pytest.raises(ox.ValidationError) as raised:
+        ox.urlencoded.decode(query, PairsQuery, unknown="forbid")
+    expected = [
+        {**dict(e), "path": ["query", *e["path"]], "pointer": "/query" + e["pointer"]}
+        for e in raised.value.errors()
+    ]
+    assert problem["errors"] == expected
+    assert problem["status"] == 422
+
+
+def test_a_malformed_escape_through_the_abi_is_a_decode_report() -> None:
+    plan = host.plan_for(PairsQuery)
+    problem = pairs_problem(plan.decode_urlencoded, b"page=1&q=%zz")
+    assert problem["status"] == 400
+    (error,) = problem["errors"]
+    assert (error["code"], error["pointer"], error["ctx"]["format"]) == (
+        "syntax",
+        "/q",
+        "urlencoded",
+    )
+    assert (
+        pairs_problem(plan.decode_pairs, [("q", "x")] * 3, limits={"max_items": 2})["status"] == 413
+    )
+
+
+def test_limits_max_errors_and_unknown_are_honoured_by_decode_pairs() -> None:
+    plan = host.plan_for(PairsQuery)
+    query = b"page=x&ids=a&ids=b&q=1&q=2"
+    assert len(pairs_problem(plan.decode_urlencoded, query)["errors"]) == 4
+    assert len(pairs_problem(plan.decode_urlencoded, query, max_errors=1)["errors"]) == 1
+    assert (
+        pairs_problem(plan.decode_urlencoded, b"q=abcdef", limits={"max_str_len": 5})["status"]
+        == 413
+    )
+    assert (
+        pairs_problem(plan.decode_urlencoded, b"q=abcdef", limits={"max_bytes": 5})["status"] == 413
+    )
+    assert pairs_problem(plan.decode_urlencoded, b"zz=1", unknown="forbid")["errors"][0][
+        "code"
+    ] == ("unknown_field")
+
+
+def test_decode_pairs_shares_the_plan_cache_with_the_python_api() -> None:
+    ox.urlencoded.decode("page=2", PairsQuery)
+    before = _oxiform._plan_stats()  # pyright: ignore[reportPrivateUsage]
+    plan = host.plan_for(PairsQuery)
+    plan.decode_urlencoded(b"page=3")
+    assert _oxiform._plan_stats() == before  # pyright: ignore[reportPrivateUsage]
+
+
+def raw_pairs(plan: Any, **options: Any) -> tuple[int, Any, Any, Any]:
+    return plan.decode_pairs_raw(**options)
+
+
+def test_raw_decode_pairs_with_default_options_works_for_both_sources() -> None:
+    plan = host.plan_for(PairsQuery)
+    status, value, problem, error = raw_pairs(plan, data=b"page=4&tags=a", null_options=True)
+    assert (status, value.page, value.tags, problem, error) == (OX_OK, 4, ["a"], None, None)
+    status, value, *_ = raw_pairs(plan, pairs=[(b"page", b"5")], format=OX_FORMAT_PAIRS)
+    assert (status, value.page) == (OX_OK, 5)
+    status, value, *_ = raw_pairs(plan, data=b"", format=OX_FORMAT_URLENCODED, null_source=True)
+    assert (status, value.page) == (OX_OK, 1)
+
+
+def test_options_of_a_later_minor_are_read_up_to_what_this_oxiform_knows() -> None:
+    plan = host.plan_for(PairsQuery)
+    status, value, *_ = raw_pairs(plan, data=b"page=4", extra=64, flags=OX_PAIRS_CASE_INSENSITIVE)
+    assert (status, value.page) == (OX_OK, 4)
+
+
+def test_pairs_options_that_are_too_small_or_unknown_say_what_to_do() -> None:
+    plan = host.plan_for(PairsQuery)
+    status, value, problem, error = raw_pairs(plan, data=b"page=1", struct_size=8)
+    assert status == OX_INVALID_ARGUMENT and value is None and problem is None
+    assert isinstance(error, ValueError) and "ABI 1.1" in str(error)
+    assert "size_of the struct you were built against" in str(error)
+    status, _, _, error = raw_pairs(plan, data=b"page=1", flags=0x80)
+    assert status == OX_UNSUPPORTED and "upgrade oxiform" in str(error)
+    status, _, _, error = raw_pairs(plan, data=b"page=1", unknown=9)
+    assert status == OX_INVALID_ARGUMENT and "options.unknown" in str(error)
+
+
+def test_decode_pairs_refuses_what_it_cannot_read_and_says_what_to_pass() -> None:
+    plan = host.plan_for(PairsQuery)
+    status, _, _, error = raw_pairs(plan, data=b"a=1", format=1)
+    assert status == OX_UNSUPPORTED and isinstance(error, NotImplementedError)
+    assert "OX_FORMAT_URLENCODED" in str(error)
+    status, _, _, error = raw_pairs(
+        plan, data=b"a=1", pairs=[(b"a", b"1")], format=OX_FORMAT_URLENCODED
+    )
+    assert status == OX_INVALID_ARGUMENT and "pass NULL and 0" in str(error)
+    status, _, _, error = raw_pairs(plan, data=b"a=1", pairs=[(b"a", b"1")], format=OX_FORMAT_PAIRS)
+    assert status == OX_INVALID_ARGUMENT and "pass NULL and 0" in str(error)
+    status, _, _, error = raw_pairs(plan, data=b"a=1", null_source=True)
+    assert status == OX_INVALID_ARGUMENT and "NULL data pointer" in str(error)
+    status, _, _, error = raw_pairs(
+        plan, pairs=[(b"a", b"1")], format=OX_FORMAT_PAIRS, null_source=True
+    )
+    assert status == OX_INVALID_ARGUMENT and "NULL pairs pointer" in str(error)
+    model_free = host.plan_for(dict[str, str])
+    status, _, _, error = raw_pairs(model_free, data=b"a=1")
+    assert status == OX_INVALID_ARGUMENT and "not a model" in str(error)
+
+
+def test_pairs_that_are_not_utf8_are_a_syntax_problem_through_the_abi() -> None:
+    plan = host.plan_for(PairsQuery)
+    status, value, problem, _ = raw_pairs(plan, pairs=[(b"q", b"\xff")], format=OX_FORMAT_PAIRS)
+    assert status == OX_INVALID and value is None
+    assert problem["errors"][0]["code"] == "syntax" and problem["errors"][0]["pointer"] == "/q"
+
+
+def test_pairs_and_a_body_combine_into_one_problem_through_the_abi() -> None:
+    parts = [
+        ("query", host.plan_for(PairsQuery), b"page=0&page=1&ids=x", "urlencoded"),
+        ("body", host.plan_for(User), b'{"id": "x", "name": ""}', "strict"),
+    ]
+    with pytest.raises(host.HostProblem) as raised:
+        host.decode_request(parts)
+    problem = raised.value.args[0]
+    assert problem["status"] == 422
+    with pytest.raises(ox.ValidationError) as query:
+        ox.urlencoded.decode("page=0&page=1&ids=x", PairsQuery)
+    expected = ValidationError.combine(
+        {"query": query.value, "body": python_error(b'{"id": "x", "name": ""}', User)}
+    ).errors()
+    assert [dict(e) for e in problem_errors(raised.value)] == [dict(e) for e in expected]
+    assert [e["pointer"] for e in problem["errors"]][:2] == ["/query/page", "/query/ids/0"]
+    assert any(e["pointer"].startswith("/body/") for e in problem["errors"])
+    ok = host.decode_request([("query", host.plan_for(PairsQuery), b"page=2", "urlencoded")])
+    assert ok["query"].page == 2
+
+
+# --- a host built for ABI 1.0 keeps working -----------------------------------------------------
+
+
+def test_a_host_built_for_1_0_loads_and_decodes_against_this_1_1_oxiform() -> None:
+    status, value = host.legacy_decode(User, b'{"id": 3, "name": "n"}')
+    assert status == OX_OK and value.id == 3
+    status, value = host.legacy_decode(Base, b'{"id": "7"}', lax=True)
+    assert status == OX_OK and value.id == 7
+    status, value = host.legacy_decode(User, b'{"id": "x", "name": ""}')
+    assert status == OX_INVALID and value is None
+
+
+def test_the_1_0_table_is_a_prefix_of_the_1_1_table() -> None:
+    # The 1.0 host's own struct is shorter than the table this oxiform exports.
+    assert host.legacy_table_size() < host.table_size()
+    host.legacy_check(1, 0, host.legacy_table_size())
+    host.legacy_check(1, 1, host.table_size())
+    host.legacy_check(1, 7, 10_000)
+
+
+def test_a_1_0_host_refuses_what_it_could_not_have_been_built_for() -> None:
+    with pytest.raises(
+        ImportError, match="built for oxiform ABI major version 2.*exports ABI major version"
+    ):
+        host.import_as(2, 0)
+    with pytest.raises(ImportError, match="the oxiform ABI table is 8 bytes long"):
+        host.legacy_check(1, 0, 8)

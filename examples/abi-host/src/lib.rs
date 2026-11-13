@@ -483,6 +483,12 @@ fn plan_for(py: Python<'_>, target: &Bound<'_, PyAny>) -> PyResult<Plan> {
     }
 }
 
+/// The size in bytes of the table this host was built against (1.1).
+#[pyfunction]
+fn table_size() -> usize {
+    size_of::<oxiform_abi::OxiformApi>()
+}
+
 /// `plan_for` called with NULL, as a C host with a bug would: `(status, error)`.
 #[pyfunction]
 fn plan_for_null(py: Python<'_>) -> PyResult<(i32, Py<PyAny>)> {
@@ -517,7 +523,8 @@ fn decode_null_plan(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<(i32, P
 
 /// Decodes the parts of one request, each with its own plan, mode and source, and builds one
 /// problem when any of them is invalid (OX-4 through the ABI). `parts` is
-/// `[(source, plan, data, mode)]` in order of priority.
+/// `[(source, plan, data, mode)]` in order of priority; `mode` is `strict` or `lax` for a JSON
+/// document and `urlencoded` for a query string or form read with `decode_pairs`.
 #[pyfunction]
 #[pyo3(signature = (parts, *, max_errors = 100, unknown = "model"))]
 fn decode_request<'py>(
@@ -532,8 +539,27 @@ fn decode_request<'py>(
     for part in parts.iter() {
         let (source, plan, data, mode): (String, Py<Plan>, Bound<'py, PyAny>, String) =
             part.extract()?;
-        let options = decode_options(&mode, max_errors, None, unknown)?;
-        match decode_through_table(py, &plan.get().plan, bytes_of(&data)?, &options)? {
+        // `urlencoded` is a query string or a form, read as a model by `decode_pairs`.
+        let decoded = if mode == "urlencoded" {
+            let options = pairs_options(false, max_errors, None, unknown)?;
+            // SAFETY: this thread is attached (PyO3 gave us `py`).
+            let decoded =
+                unsafe { api().decode_urlencoded(&plan.get().plan, bytes_of(&data)?, &options) };
+            match decoded {
+                Ok(Decoded::Value(value)) => {
+                    // SAFETY: the table gave us one new reference, which the `Bound` now owns.
+                    Ok(Ok(unsafe {
+                        Bound::from_owned_ptr(py, value.as_ptr().cast())
+                    }))
+                }
+                Ok(Decoded::Invalid(report)) => Ok(Err(report)),
+                Err(_) => Err(PyErr::fetch(py)),
+            }
+        } else {
+            let options = decode_options(&mode, max_errors, None, unknown)?;
+            decode_through_table(py, &plan.get().plan, bytes_of(&data)?, &options)
+        };
+        match decoded? {
             Ok(value) => values.set_item(source, value)?,
             Err(report) => {
                 sources.push(source);
@@ -705,6 +731,7 @@ fn oxiform_abi_host(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(encode, module)?)?;
     module.add_function(wrap_pyfunction!(encode_raw, module)?)?;
     module.add_function(wrap_pyfunction!(abi_version, module)?)?;
+    module.add_function(wrap_pyfunction!(table_size, module)?)?;
     module.add_function(wrap_pyfunction!(legacy::legacy_decode, module)?)?;
     module.add_function(wrap_pyfunction!(legacy::legacy_check, module)?)?;
     module.add_function(wrap_pyfunction!(legacy::legacy_table_size, module)?)?;
