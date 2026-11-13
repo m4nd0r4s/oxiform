@@ -42,6 +42,15 @@ class Sparse(enum.Flag):
     B = 4
 
 
+class MultiBit(enum.Flag):
+    RW = 3
+
+
+class MixedBits(enum.Flag):
+    A = 1
+    HI = 0b1100
+
+
 class Bits(enum.IntFlag):
     A = 1
     B = 2
@@ -256,6 +265,8 @@ CASES: list[Case] = [
     ("Enum mixed", Mixed, SCALARS),
     ("Flag", Perm, SCALARS + ["3", "5", "6", "7", "8", "-8", "-9"]),
     ("sparse Flag", Sparse, SCALARS + ["5", "4", "-4", "-3", "-8", "-5"]),
+    ("multi-bit Flag", MultiBit, SCALARS + [str(n) for n in range(-5, 5)]),
+    ("mixed Flag", MixedBits, SCALARS + [str(n) for n in range(-17, 17)]),
     ("IntFlag", Bits, SCALARS + ["3", "8", "-1", "100"]),
     ("Optional int", int | None, SCALARS),
     ("Optional str", str | None, SCALARS),
@@ -302,6 +313,26 @@ CASES: list[Case] = [
 # without a fraction, so it cannot refuse the forms below that the decoder refuses (a strict
 # ``int`` is written without a point or an exponent; lax mode also refuses an exponent).
 INTEGER_FORMS = {"1.0", "1e2", "2.0"}
+INTEGER_TYPES = {
+    "int",
+    "Ge/Le",
+    "OneOf int",
+    "Literal int",
+    "Literal int bool",
+    "Literal mixed",
+    "IntEnum",
+    "Enum mixed",
+    "Flag",
+    "sparse Flag",
+    "multi-bit Flag",
+    "mixed Flag",
+    "IntFlag",
+    "Optional int",
+    "int | str",
+    "int | str | None",
+    "int | bool",
+    "int | Literal",
+}
 
 # Lax mode reads text that a pattern can describe but whose number a limit cannot bound: the
 # ``minimum`` and ``maximum`` apply to the numeric branch only.
@@ -312,7 +343,11 @@ LAX_TEXT_LIMITS = {("Ge/Le", raw, "lax") for raw in ('"42"', '"-7"', '"1"', '"0"
 
 def excused(name: str, raw: str, mode: str, decoded: bool, validated: bool) -> bool:
     if validated and not decoded:
-        return raw in INTEGER_FORMS or (name, raw, mode) in LAX_TEXT_LIMITS
+        return (name in INTEGER_TYPES and raw in INTEGER_FORMS) or (
+            name,
+            raw,
+            mode,
+        ) in LAX_TEXT_LIMITS
     return False
 
 

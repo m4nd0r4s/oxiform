@@ -3,6 +3,8 @@ the arguments, the public types, and bundles written from several threads at onc
 
 import enum
 import json
+import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from typing import Annotated, Any
@@ -29,6 +31,14 @@ from oxiform._json_schema.regex import portable_pattern
         (r"a\.b\\c\(", r"a\.b\\c\("),
         (r"\s\S\b", r"\s\S\b"),
         ("[é]", "[é]"),
+        (r"a.b", r"a[^\n]b"),
+        (r"[.]", "[.]"),
+        (r"a\.b", r"a\.b"),
+        (r"\a", r"\x07"),
+        (r"a\-b\_c\ d\!\#\@\&\%\~\'\"\,\:\;\=", "a-b_c d!#@&%~'\",:;="),
+        (r"[\-a\_\&]", r"[\-a_&]"),
+        (r"\/\|\^\$\{\}\[\]", r"\/\|\^\$\{\}\[\]"),
+        (r"\x41\u0041\n\t\f\v", r"\x41\u0041\n\t\f\v"),
     ],
 )
 def test_patterns_are_written_as_ecma_262_where_they_mean_the_same(
@@ -52,6 +62,10 @@ def test_patterns_are_written_as_ecma_262_where_they_mean_the_same(
         (r"[a-z--b]", "the class operation"),
         (r"[\D]", r"\D inside a class"),
         (r"\U0010FFFF", r"the escape \U"),
+        (r"\u{41}", r"the escape \u{"),
+        (r"\<word\>", r"the word boundary \<"),
+        (r"a\>", r"the word boundary \>"),
+        (r"\b{start}x", r"the boundary \b{...}"),
         (r"\x{41}", r"the escape \x"),
         (r"[]a]", "a ] first in a class"),
     ],
@@ -95,6 +109,48 @@ def test_translated_patterns_agree_with_the_decoder_on_ascii_text(text: str) -> 
         assert decoded and not check.is_valid(text)  # Unicode letters: the stated difference
 
 
+def test_translated_patterns_compile_as_javascript_regular_expressions() -> None:
+    """Every pattern that is carried over is valid for the ``u`` flag that validators use."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    sources = [
+        r"^\d+$",
+        r"^[\d-]{2}$",
+        r"\w+@\w+\.com",
+        r"(?P<year>\d{4})-(?P<month>\d{2})",
+        r"\Aab\z",
+        r"a.b",
+        r"\a",
+        r"a\-b\_c\ d\!\#\@\&\%\~\'\"\,\:\;\=",
+        r"[\-a\_\&\.\ ]",
+        r"\/\|\^\$\{\}\[\]\(\)\*\+\?\\",
+        r"\x41\u0041\n\t\f\v\s\S\b\B",
+        r"^(?:[a-z]+|\d{1,3})(?:x|y)*$",
+    ]
+    patterns = [portable_pattern(source, "root") for source in sources]
+    script = (
+        "const patterns = JSON.parse(process.argv[1]);"
+        "for (const p of patterns) { new RegExp(p, 'u'); }"
+        "console.log('ok');"
+    )
+    run = subprocess.run(
+        [node, "-e", script, json.dumps(patterns)], capture_output=True, text=True, check=False
+    )
+    assert run.returncode == 0 and run.stdout.strip() == "ok", run.stderr
+
+
+def test_the_dot_of_the_schema_excludes_only_newline_like_rust() -> None:
+    target = Annotated[str, ox.Pattern(r"^a.b$")]
+    check = validator(ox.json_schema_bundle([target]))
+    for text in ("axb", "a\rb", "a\u2028b", "a b"):
+        assert check.is_valid(text) is True
+        ox.json.decode(json.dumps(text), target)
+    assert not check.is_valid("a\nb")
+    with pytest.raises(ox.ValidationError):
+        ox.json.decode(json.dumps("a\nb"), target)
+
+
 class Perm(enum.Flag):
     READ = 1
     WRITE = 2
@@ -111,6 +167,15 @@ class Bits(enum.IntFlag):
     B = 2
 
 
+class Multi(enum.Flag):
+    RW = 3
+
+
+class Mixed(enum.Flag):
+    A = 1
+    HI = 0b1100
+
+
 Wide = enum.Flag("Wide", {f"B{i}": 1 << i for i in range(12)})
 
 
@@ -119,6 +184,22 @@ def test_a_flag_lists_the_integers_it_takes_and_an_intflag_takes_any() -> None:
     assert perm == {"type": "integer", "enum": [*range(-8, 8)]}
     sparse = ox.json_schema_bundle([Sparse]).schemas[0]
     assert sparse["enum"] == [-8, -7, -4, -3, 0, 1, 4, 5]
+    # Members of several bits, alone or beside a single one, count in the mask.
+    assert ox.json_schema_bundle([Multi]).schemas[0]["enum"] == [-4, -3, -2, -1, 0, 1, 2, 3]
+    assert ox.json_schema_bundle([Mixed]).schemas[0]["enum"] == [
+        -16,
+        -15,
+        -12,
+        -8,
+        -4,
+        -3,
+        0,
+        1,
+        4,
+        8,
+        12,
+        13,
+    ]
     assert ox.json_schema_bundle([Bits]).schemas[0] == {"type": "integer"}
     wide = ox.json_schema_bundle([Wide]).schemas[0]
     assert wide == {"type": "integer", "minimum": -4096, "maximum": 4095}
