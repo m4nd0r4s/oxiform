@@ -88,6 +88,19 @@ fn encode<'py>(
     indent: Option<usize>,
     sort_keys: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
+    Ok(PyBytes::new(
+        obj.py(),
+        &encode_to_vec(obj, plan, indent, sort_keys)?,
+    ))
+}
+
+/// The JSON of `obj`, as the declared type of `plan` when there is one.
+pub(crate) fn encode_to_vec(
+    obj: &Bound<'_, PyAny>,
+    plan: Option<&DeclaredPlan>,
+    indent: Option<usize>,
+    sort_keys: bool,
+) -> PyResult<Vec<u8>> {
     let mut writer = JsonWriter::new(indent);
     let mut walker = ObjectWalker::new(&mut writer, sort_keys);
     match plan {
@@ -95,5 +108,5 @@ fn encode<'py>(
         None => walker.value(obj),
     }
     .map_err(|failure| failure.into_error(obj.py()))?;
-    Ok(PyBytes::new(obj.py(), &writer.into_bytes()))
+    Ok(writer.into_bytes())
 }

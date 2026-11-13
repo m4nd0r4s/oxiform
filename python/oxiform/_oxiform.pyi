@@ -7,6 +7,17 @@ Unknown = Literal["ignore", "forbid"]
 
 __version__: str
 
+ABI_VERSION: tuple[int, int]
+"""`(major, minor)` of the embedding C ABI this build exports through the capsule `_ABI_V1`."""
+_ABI_MAJORS: tuple[int, ...]
+"""Every major version of the ABI that has a capsule, as `_ABI_V<major>`."""
+_ABI_V1: object
+"""The capsule (a `PyCapsule`) of the function table of ABI 1, for native extensions."""
+
+def _plan_stats() -> tuple[int, int]:
+    """`(types compiled in this process, types in the plan cache)`: a host that asks for the plan
+    of a known type compiles nothing."""
+
 class Limits:
     """What protects a decode against hostile input. Exceeding one is a ``DecodeError`` with the
     code ``limit_exceeded``.

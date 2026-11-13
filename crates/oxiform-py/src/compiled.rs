@@ -1,6 +1,7 @@
 //! Compiled types, cached per target type for the life of the process.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use oxiform_core::compiler::compile;
 use oxiform_core::plan::Plan;
@@ -24,6 +25,10 @@ pub(crate) struct PlanHandle {
 }
 
 static PLANS: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
+
+/// How many types were compiled in this process: the embedding ABI shares the cache of
+/// `ox.json.decode`, so asking for a plan of a known type compiles nothing.
+static COMPILATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// The compiled form of `target`, compiling it on first use.
 pub(crate) fn compiled_for(target: &Bound<'_, PyAny>) -> PyResult<Arc<CompiledType>> {
@@ -60,6 +65,7 @@ pub(crate) fn warmup(types: &Bound<'_, PyTuple>) -> PyResult<()> {
 
 fn compile_target(target: &Bound<'_, PyAny>) -> PyResult<CompiledType> {
     let py = target.py();
+    COMPILATIONS.fetch_add(1, Ordering::Relaxed);
     let description = describe(py)?.call1((target,))?;
     let (description, runtime) = read_description(&description)?;
     match compile(&description) {
@@ -69,4 +75,11 @@ fn compile_target(target: &Bound<'_, PyAny>) -> PyResult<CompiledType> {
             error.to_string(),
         )),
     }
+}
+
+/// `(compilations, cached types)` of the plan cache, to tell that a host shares it.
+#[pyfunction]
+pub(crate) fn _plan_stats(py: Python<'_>) -> (u64, usize) {
+    let cached = PLANS.get(py).map_or(0, |cache| cache.bind(py).len());
+    (COMPILATIONS.load(Ordering::Relaxed), cached)
 }

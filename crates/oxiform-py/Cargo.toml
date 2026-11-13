@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64.workspace = true
+oxiform-abi.workspace = true
+oxiform-abi-export.workspace = true
 oxiform-core.workspace = true
 oxiform-formats.workspace = true
 pyo3.workspace = true

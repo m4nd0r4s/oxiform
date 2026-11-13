@@ -94,8 +94,23 @@ fn decode_with<'py>(
     options: &Options,
 ) -> PyResult<Bound<'py, PyAny>> {
     let py = data.py();
-    let limits = &options.limits;
     let input = read_input(data)?;
+    match decode_bytes(py, &input, compiled, options) {
+        Ok(value) => Ok(value),
+        Err(Failure::Invalid(report)) => Err(report_error(py, &report, target, "json")),
+        Err(Failure::Sink(error)) => Err(error),
+    }
+}
+
+/// Reads the JSON document in `input` as the type of `compiled`: the core of `decode`, which the
+/// embedding ABI calls with a buffer of its host.
+pub(crate) fn decode_bytes<'py>(
+    py: Python<'py>,
+    input: &[u8],
+    compiled: &CompiledType,
+    options: &Options,
+) -> Result<Bound<'py, PyAny>, Failure<PyErr>> {
+    let limits = &options.limits;
     if input.len() > limits.max_bytes {
         let issue = Issue {
             code: ErrorCode::LimitExceeded,
@@ -107,26 +122,17 @@ fn decode_with<'py>(
             input: None,
             context: vec![("limit", ContextValue::Text("max_bytes".into()))],
         };
-        return Err(report_error(py, &decode_report(issue), target, "json"));
+        return Err(Failure::Invalid(decode_report(issue)));
     }
-    let text = match std::str::from_utf8(&input) {
+    let text = match std::str::from_utf8(input) {
         Ok(text) => text,
         Err(error) => {
-            return Err(report_error(
-                py,
-                &decode_report(invalid_utf8(&input, error)),
-                target,
-                "json",
-            ));
+            return Err(Failure::Invalid(decode_report(invalid_utf8(input, error))));
         }
     };
     let mut reader = JsonReader::new(text, limits.max_depth).with_max_str_len(limits.max_str_len);
     let mut sink = PythonSink::new(py, compiled);
-    match execute(&compiled.plan, &mut reader, &mut sink, options) {
-        Ok(value) => Ok(value),
-        Err(Failure::Invalid(report)) => Err(report_error(py, &report, target, "json")),
-        Err(Failure::Sink(error)) => Err(error),
-    }
+    execute(&compiled.plan, &mut reader, &mut sink, options)
 }
 
 /// The bytes of the input. `bytes` and `str` are borrowed; anything else that exposes a
