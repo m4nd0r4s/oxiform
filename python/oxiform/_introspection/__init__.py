@@ -1,5 +1,11 @@
 """Turns Python types into the description the Rust compiler reads."""
 
+from oxiform._introspection.declared import (
+    DeclaredDescription,
+    DeclaredField,
+    DeclaredStruct,
+    declared_description,
+)
 from oxiform._introspection.describe import UnresolvedAnnotationError, describe
 from oxiform._introspection.encoding import EncodedField, encoded_fields
 from oxiform._introspection.model import (
@@ -14,6 +20,9 @@ from oxiform._introspection.model import (
 )
 
 __all__ = [
+    "DeclaredDescription",
+    "DeclaredField",
+    "DeclaredStruct",
     "ConstraintValues",
     "Default",
     "Description",
@@ -24,6 +33,7 @@ __all__ = [
     "StructDescription",
     "TypeDescription",
     "UnresolvedAnnotationError",
+    "declared_description",
     "describe",
     "encoded_fields",
 ]

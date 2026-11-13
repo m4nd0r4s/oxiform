@@ -22,7 +22,7 @@ enum Default {
 }
 
 impl Omission {
-    fn never(&self) -> bool {
+    pub(super) fn never(&self) -> bool {
         !self.if_none && self.if_default.is_none() && self.if_predicate.is_none()
     }
 
@@ -179,18 +179,6 @@ fn read_field(cls: &Bound<'_, PyType>, field: &Bound<'_, PyAny>) -> PyResult<Tab
     let py = cls.py();
     let name: String = field.getattr("name")?.extract()?;
     let wire_name: String = field.getattr("wire_name")?.extract()?;
-    let if_default = field.getattr("omit_if_default")?;
-    let if_default = if if_default.is_none() {
-        None
-    } else {
-        let default = if_default.cast::<PyTuple>()?;
-        let value = default.get_item(1)?.unbind();
-        Some(match default.get_item(0)?.extract::<String>()?.as_str() {
-            "factory" => Default::Factory(value),
-            _ => Default::Value(value),
-        })
-    };
-    let if_predicate = field.getattr("omit_if")?;
     let constant = field.getattr("constant")?;
     let hint = field.getattr("hint")?;
     Ok(TableField {
@@ -204,11 +192,28 @@ fn read_field(cls: &Bound<'_, PyType>, field: &Bound<'_, PyAny>) -> PyResult<Tab
         name: PyString::intern(py, &name).unbind(),
         wire_name: PyString::intern(py, &wire_name).unbind(),
         flatten: field.getattr("flatten")?.extract()?,
-        omission: Omission {
-            if_none: field.getattr("omit_if_none")?.extract()?,
-            if_default,
-            if_predicate: (!if_predicate.is_none()).then(|| if_predicate.unbind()),
-        },
+        omission: read_omission(field)?,
+    })
+}
+
+/// When the `EncodedField` `field` is left out of the output.
+pub(super) fn read_omission(field: &Bound<'_, PyAny>) -> PyResult<Omission> {
+    let if_default = field.getattr("omit_if_default")?;
+    let if_default = if if_default.is_none() {
+        None
+    } else {
+        let default = if_default.cast::<PyTuple>()?;
+        let value = default.get_item(1)?.unbind();
+        Some(match default.get_item(0)?.extract::<String>()?.as_str() {
+            "factory" => Default::Factory(value),
+            _ => Default::Value(value),
+        })
+    };
+    let if_predicate = field.getattr("omit_if")?;
+    Ok(Omission {
+        if_none: field.getattr("omit_if_none")?.extract()?,
+        if_default,
+        if_predicate: (!if_predicate.is_none()).then(|| if_predicate.unbind()),
     })
 }
 

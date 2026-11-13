@@ -71,13 +71,28 @@ def json_decode(
 def warmup(*types: object) -> None:
     """Compiles the plans of ``types`` now instead of on first use."""
 
-def json_encode(obj: object, *, indent: int | None = None, sort_keys: bool = False) -> bytes: ...
+def json_encode(
+    obj: object, *, type: object = None, indent: int | None = None, sort_keys: bool = False
+) -> bytes:
+    """Writes ``obj`` as JSON.
+
+    With ``type``, ``obj`` is written as that declared type and not as its own class: only the
+    fields of ``type`` are written, and the fields of a subclass outside ``type`` never are. A
+    model of ``type`` is read as attributes from an object and as keys from a mapping. Without
+    ``type``, the class of each value decides what is written.
+    """
 
 class JsonEncoder:
     """A reusable JSON encoder with fixed options."""
 
-    def __init__(self, *, indent: int | None = None, sort_keys: bool = False) -> None: ...
-    def encode(self, obj: object) -> bytes: ...
+    def __init__(
+        self, *, type: object = None, indent: int | None = None, sort_keys: bool = False
+    ) -> None: ...
+    def encode(self, obj: object, *, type: object = None) -> bytes:
+        """Writes ``obj`` as the ``type`` given here or else the one of the encoder."""
+    @property
+    def type(self) -> object:
+        """The type written when ``encode`` is not given one, or ``None``."""
 
 class JsonDecoder(Generic[_T]):
     """A reusable JSON decoder for one type."""

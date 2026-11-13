@@ -1,5 +1,6 @@
 //! Walks Python objects by their runtime type and hands them to a format writer.
 
+pub(crate) mod declared;
 mod fields;
 mod hints;
 pub(crate) mod json;
@@ -178,14 +179,7 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
     /// A set or frozenset, sorted when its items can be compared, so the same set is always
     /// written the same way.
     fn set(&mut self, set: &Bound<'_, PyAny>) -> Result<(), EncodeFailure> {
-        let py = set.py();
-        let items = match sorted(py)?.call1((set,)) {
-            Ok(items) => items.cast_into::<PyList>().map_err(PyErr::from)?,
-            Err(error) if error.is_instance_of::<PyTypeError>(py) => {
-                PyList::new(py, set.try_iter()?.collect::<PyResult<Vec<_>>>()?)?
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let items = sorted_items(set)?;
         self.sequence(items.len(), items.iter())
     }
 
@@ -373,6 +367,18 @@ fn zone_info_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
 
 fn sorted(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     SORTED.import(py, "builtins", "sorted")
+}
+
+/// The items of a set or frozenset, sorted when they can be compared.
+fn sorted_items<'py>(set: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyList>> {
+    let py = set.py();
+    match sorted(py)?.call1((set,)) {
+        Ok(items) => Ok(items.cast_into::<PyList>().map_err(PyErr::from)?),
+        Err(error) if error.is_instance_of::<PyTypeError>(py) => {
+            PyList::new(py, set.try_iter()?.collect::<PyResult<Vec<_>>>()?)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// A dict key as text: `str` keys as they are, `int` keys in decimal.

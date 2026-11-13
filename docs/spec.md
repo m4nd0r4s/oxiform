@@ -432,7 +432,7 @@ Each module exposes the same functions (full signatures in section 11):
 
 ```python
 ox.json.decode(data, type=Any, *, mode="strict", context=None, limits=None)   # -> T
-ox.json.encode(obj, *, include=None, exclude=None, policy=None)             # -> bytes
+ox.json.encode(obj, *, type=None, include=None, exclude=None, policy=None)  # -> bytes
 ox.json.iter_decode(source, type=Any, *, path=None, lines=False)            # -> Iterator[T]
 ox.json.decode_many(docs, type, *, on_error="raise", threads=1)             # -> DecodeResult
 ox.json.Encoder(**opts) / ox.json.Decoder(type, **opts)                     # reusable
@@ -450,7 +450,17 @@ ox.json.Encoder(**opts) / ox.json.Decoder(type, **opts)                     # re
 
 Without a type, `decode` returns builtins, so oxiform also works as a fast replacement for `json`, `yaml` and `tomllib`. Outside the formats, `ox.convert(obj, type, mode="lax")` validates data that is already in Python, and `ox.to_builtins(obj)` does the reverse, with the representations of `ox.json`.
 
-**Encoding as a declared type (planned, for hosts such as a web framework).** `encode(obj, type=T)` walks the plan of `T` and not of the class of `obj`: fields outside `T` are never written, a union dispatches on the class of the value among its declared variants, and `Any` falls back to the class of the value. When `obj` is not an instance of `T` (a `dict`, or another model with the same fields), each field of `T` is read as an attribute from an object and as a key from a mapping; a field that is neither raises `EncodeError` naming the field and the type. Without `type=`, encode keeps walking the class of the value.
+**Encoding as a declared type (OX-2, for hosts such as a web framework).** `encode(obj, type=T)` (and `Encoder(type=T)`, or `Encoder.encode(obj, type=T)` per call) walks the plan of `T`, not the class of `obj`. `T` is checked like the type of a `decode`: a declaration that does not decode is a `SchemaError` here too. Without `type=` (or with `type=None`), encode keeps walking the class of each value and nothing changes. Use `type(None)` to declare `None`.
+
+- **Fields outside `T` are never written**, at any depth: a field declared as `Base` that holds a `Sub` writes the fields of `Base` only, in `list[Base]`, `dict[str, Base]`, `tuple[Base, ...]`, `tuple[Base, int]`, `set`/`frozenset` and `Base | None` alike. This is a security property (a return annotation filters what a handler returns), so a value that cannot be written as the declared type is an error and never falls back to the class of the value.
+- **Field attributes of `T` apply**: wire names (`rename`, `rename_all`), `skip`/`skip_encode`, `skip_if`, `skip_if_default`, `skip_if_none`, `flatten` (the declared model of the flattened field, not the class of the value) and the `tag_field` constant. The tag written is the one of the declared class: `Puppy` encoded as `Dog` writes `"dog"`.
+- **Instances and other values.** A model of `T` is read from an instance of the class or of a subclass as attributes. When the value is not an instance, a mapping is read by key and any other object by attribute, with the *Python* name of each field as key or attribute (the wire name is what is written). `None`, text, numbers, bytes and sequences are not models. A field that is neither an attribute nor a key, or a slot that is unset, raises `EncodeError` naming the field and the type. A default is not filled in: encode writes what it is given.
+- **Types without fields** (`int`, `str`, `Decimal`, `datetime`, enums, `Literal`, ...) are written by the class of the value, but a model, a mapping or a sequence is refused where one is declared, so a model cannot leak through a field declared `int`. `Any` is the one escape: it is written by the class of the value. Declare a type to filter.
+- **Unions** (`A | B`, `ox.Tagged`, `ox.External`, `ox.Untagged`) choose the variant by the class of the value, in three passes over the variants in declaration order: the first whose class *is* the class of the value; then the first the value is an *instance* of (so a subclass is written as the first variant it is an instance of, which is the one with fewer fields when the base is listed first); then the first it can *stand for* (an `int` for a `float`; a mapping or an object that has every field of a model). A value that matches no variant is an `EncodeError`. The variant is then written as its own declared type, with the tag of the union's mode. `Optional[T]` is `T` or `None`.
+- **Errors** are `EncodeError` with the JSON Pointer of the value, like every other encode error.
+- **Formats.** The walk is independent of the format: it is written once for the event writers of section 9.1, so `ox.yaml`, `ox.toml` and `ox.msgpack` take `type=` with the same meaning when they exist. Only `ox.json` exists today.
+- **Not yet supported:** `TypedDict`, `NamedTuple` and attrs classes as `T`, because none of them can be declared yet (section 3.5); `@ox.computed` fields; `include`/`exclude`. They join this walk when they join the plan.
+- **Plans** are cached per declared type for the life of the process, like those of decode. A union compares equal in any order (`A | B == B | A`), so the alias `typing` caches, and with it the plan, is the one of the first order seen in the process: do not rely on the order of a union that is declared twice in different orders.
 
 ### 5.2 Field attributes
 
@@ -925,7 +935,7 @@ ox.Partial[T]                      # decode returns a dict with only the fields 
 # --- formats: ox.json, ox.yaml, ox.toml, ox.msgpack ---
 decode(data, type=Any, *, mode="strict" | "lax", validate=True, context=None,
        limits=None, max_errors=100, fail_fast=False) -> T
-encode(obj, *, include=None, exclude=None, policy=None, validate=False) -> bytes
+encode(obj, *, type=None, include=None, exclude=None, policy=None, validate=False) -> bytes
 iter_decode(source, type=Any, *, path=None, **opcoes_de_decode) -> Iterator[T]   # does not exist in ox.toml
 decode_many(docs, type, *, on_error="raise" | "collect", threads=1, **opcoes_de_decode) -> DecodeResult
 Encoder(**opcoes_de_encode), Decoder(type, **opcoes_de_decode)  # .encode(), .encode_into(obj, buf), .decode()
