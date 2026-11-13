@@ -62,7 +62,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             self.prefix_issues(mark, || PathSegment::Key(name));
             valid &= field?;
         }
-        valid &= self.pairs_missing(structure, &seen)?;
+        valid &= self.pairs_missing(structure, &seen, &mut values)?;
         if !valid {
             return Ok(None);
         }
@@ -156,14 +156,23 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     }
 
     /// Reports the required fields that no pair gave. Returns whether none is missing.
+    ///
+    /// A field that is optional (`T | None`) is never required here: with no pair and no default
+    /// it is `None`, which is what a query string or a header that is absent means.
     fn pairs_missing(
         &mut self,
         structure: &StructPlan,
         seen: &[bool],
+        values: &mut [Option<S::Value>],
     ) -> Result<bool, Stop<S::Error>> {
         let mut complete = true;
-        for (field, was_seen) in structure.fields.iter().zip(seen) {
-            if !was_seen && !field.has_default {
+        for (index, (field, was_seen)) in structure.fields.iter().zip(seen).enumerate() {
+            if *was_seen || field.has_default {
+                continue;
+            }
+            if matches!(self.plan.node(field.value), Node::Optional { .. }) {
+                values[index] = self.emit(Sink::none)?;
+            } else {
                 let mark = self.issues.len();
                 let reported = self.report(
                     ErrorCode::Missing,

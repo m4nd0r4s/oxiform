@@ -140,6 +140,22 @@ fn a_missing_optional_field_takes_its_default_and_a_missing_required_one_is_an_i
 }
 
 #[test]
+fn a_missing_optional_field_without_a_default_is_none() {
+    let mut description = params();
+    description.structs[0].fields[2].has_default = false;
+    let Ok(Value::Instance(_, fields)) = read(&description, "page=1") else {
+        panic!("should be valid")
+    };
+    assert_eq!(fields[2], Some(Value::None));
+    // A field that is not optional is still required.
+    description.structs[0].fields[3].has_default = false;
+    assert_eq!(
+        problems(&description, "page=1"),
+        [("missing", "/X-Request-Id".to_owned())]
+    );
+}
+
+#[test]
 fn an_empty_value_is_none_for_an_optional_field_and_text_for_a_str() {
     let mut description = params();
     description.structs[0].fields[0].value_type = optional(integer());
