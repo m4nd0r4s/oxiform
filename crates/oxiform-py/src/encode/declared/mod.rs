@@ -33,6 +33,8 @@ impl DeclaredPlan {
 pub(super) enum Declared {
     /// Written by the class of the value.
     Any,
+    /// `ox.Secret[T]`: the mask, whatever the value is.
+    Secret,
     /// A scalar, or a class without fields to filter: written by the class of the value.
     Leaf(Leaf),
     Literal {
@@ -203,6 +205,7 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<Declared> {
     };
     Ok(match kind {
         "any" => Declared::Any,
+        "secret" => Declared::Secret,
         "leaf" => Declared::Leaf(Leaf {
             name: item(1)?.extract()?,
             classes: item(2)?.cast_into::<PyTuple>()?.unbind(),

@@ -60,6 +60,9 @@ impl Sink for NullSink {
     fn convert(&mut self, _: ConversionId, _: ()) -> Result<Option<()>, ()> {
         Ok(Some(()))
     }
+    fn secret(&mut self, _: ()) -> Result<(), ()> {
+        Ok(())
+    }
     fn map_new(&mut self) -> Result<(), ()> {
         Ok(())
     }

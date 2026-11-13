@@ -148,7 +148,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
     fn wants_sequence(&self, mut node: NodeId) -> bool {
         loop {
             match self.plan.node(node) {
-                Node::Optional { inner, .. } => node = *inner,
+                Node::Optional { inner, .. } | Node::Secret(inner) => node = *inner,
                 Node::List { .. } | Node::Tuple(_) => return true,
                 _ => return false,
             }

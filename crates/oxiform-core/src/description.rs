@@ -55,6 +55,9 @@ pub enum TypeDescription {
     },
     /// One of several types, trying each in order.
     Untagged(Vec<TypeDescription>),
+    /// A value that hides itself (`ox.Secret[T]`): read as the inner type, wrapped by the sink,
+    /// and never quoted in an issue.
+    Secret(Box<TypeDescription>),
 }
 
 /// What a sequence in the input becomes.

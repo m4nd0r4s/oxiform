@@ -31,6 +31,10 @@ type Entry<'py> = (String, Bound<'py, PyAny>, Option<Arc<fields::EncodeHint>>);
 /// Nesting deeper than this is refused: it is almost always a reference cycle.
 const MAX_DEPTH: usize = 128;
 
+/// What a secret is written as, in every format (spec section 6.6): one fixed text, so it says
+/// nothing about the value.
+pub(crate) const SECRET_MASK: &str = "********";
+
 /// Why an object could not be written.
 pub(crate) enum EncodeFailure {
     /// Python code raised.
@@ -165,6 +169,8 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
             self.mapping(dict)?;
         } else if let Some(table) = fields::field_table(&object.get_type())? {
             self.structure(object, table.get())?;
+        } else if object.is_instance(secret_type(object.py())?)? {
+            self.writer.string(SECRET_MASK);
         } else if object.is_instance_of::<PySet>() || object.is_instance_of::<PyFrozenSet>() {
             self.set(object)?;
         } else if object.is_instance(enum_type(object.py())?)? {
@@ -362,10 +368,16 @@ impl<'writer, W: EventWriter> ObjectWalker<'writer, W> {
     }
 }
 
+static SECRET: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static ENUM: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static SORTED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 static TEXT_TYPES: PyOnceLock<Py<PyTuple>> = PyOnceLock::new();
 static ZONE_INFO: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+/// `ox.Secret`, which is written as a mask and never as its value.
+fn secret_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    SECRET.import(py, "oxiform._secret", "Secret")
+}
 
 fn enum_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     ENUM.import(py, "enum", "Enum")

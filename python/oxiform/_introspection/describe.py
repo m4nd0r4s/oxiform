@@ -27,6 +27,7 @@ from oxiform._introspection.model import (
 from oxiform._introspection.unions import UnionMode, is_union, union_mode, without_none
 from oxiform._model_options import model_options
 from oxiform._naive import NAIVE
+from oxiform._secret import Secret
 from oxiform.errors import SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
@@ -37,6 +38,7 @@ __all__ = [
     "describe",
     "flattened_class",
     "is_enum",
+    "is_secret",
     "is_flag",
     "type_hints",
     "unwrap_annotated",
@@ -88,6 +90,10 @@ class _DescriptionBuilder:
             )
         if mode is not None:
             return self._marked_union(annotation, mode, location, constraints)
+        if annotation is Secret:
+            raise SchemaError(f"{location}: ox.Secret needs the type of its value, as Secret[str]")
+        if typing.get_origin(annotation) is Secret:
+            return self._secret(typing.get_args(annotation), location, constraints)
         if annotation is Any:
             return self._without_constraints(("any",), "Any", constraints, location)
         if annotation is bool:
@@ -157,12 +163,25 @@ class _DescriptionBuilder:
             )
         raise SchemaError(f"{location}: unsupported type {annotation!r}")
 
+    def _secret(
+        self, arguments: tuple[object, ...], location: str, constraints: ConstraintValues
+    ) -> TypeDescription:
+        """``Secret[T]`` reads ``T`` (with the constraints declared around it) and hides it."""
+        (inner,) = arguments
+        described = self.type_of(inner, location, constraints)
+        if described[0] == "secret":
+            raise SchemaError(
+                f"{location}: a Secret cannot hold a Secret: it already hides its value"
+            )
+        return ("secret", described)
+
     def _union(
         self, arguments: tuple[object, ...], location: str, constraints: ConstraintValues
     ) -> TypeDescription:
         present = without_none(arguments)
         if len(present) == 1 and len(arguments) == 2:
             return ("optional", self.type_of(present[0], location, constraints))
+        _refuse_secret_variants(present, location)
         if constraints:
             raise SchemaError(f"{location}: constraints do not apply to a union")
         return ("union", tuple(self.type_of(argument, location, {}) for argument in arguments))
@@ -183,6 +202,7 @@ class _DescriptionBuilder:
             raise SchemaError(f"{location}: constraints do not apply to a union")
         arguments = typing.get_args(annotation)
         present = without_none(arguments)
+        _refuse_secret_variants(present, location)
         variants = tuple(self.type_of(argument, location, {}) for argument in present)
         described: TypeDescription
         match mode:
@@ -286,6 +306,24 @@ class _DescriptionBuilder:
             )
             members.append(("field", field.name, len(fields) - 1))
         return Layout(cls, tuple(members), hasattr(cls, "__post_init__"))
+
+
+def _refuse_secret_variants(variants: list[object], location: str) -> None:
+    """A union is read by the kind of value it gets, so one of several variants cannot hide
+    itself: the whole union can (``Secret[str | int]``)."""
+    for variant in variants:
+        if is_secret(variant):
+            raise SchemaError(
+                f"{location}: a Secret cannot be one of several variants of a union; "
+                "write Secret[A | B] to hide the whole union"
+            )
+
+
+def is_secret(annotation: object) -> bool:
+    """Whether ``annotation`` is ``Secret[T]``, with or without ``Annotated`` around it."""
+    while typing.get_origin(annotation) is Annotated:
+        annotation = typing.get_args(annotation)[0]
+    return annotation is Secret or typing.get_origin(annotation) is Secret
 
 
 def _with_types(values: tuple[object, ...]) -> tuple[tuple[type, object], ...]:

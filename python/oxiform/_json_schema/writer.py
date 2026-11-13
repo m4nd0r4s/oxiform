@@ -33,6 +33,7 @@ from oxiform._json_schema import patterns
 from oxiform._json_schema.regex import portable_pattern
 from oxiform._model_options import model_options
 from oxiform._oxiform import json_encode
+from oxiform._secret import MASK, Secret
 from oxiform.errors import EncodeError, SchemaError
 from oxiform.unions import External, Tagged, Untagged
 
@@ -147,6 +148,10 @@ class SchemaWriter:
             return dict(_TEMPORAL_SCHEMAS["naive_datetime"])
         if mode is not None:
             return self._marked_union(annotation, mode, location, constraints, drop_none)
+        if annotation is Secret:
+            raise SchemaError(f"{location}: ox.Secret needs the type of its value, as Secret[str]")
+        if typing.get_origin(annotation) is Secret:
+            return self._secret(typing.get_args(annotation)[0], location, constraints)
         if annotation is Any:
             return {}
         if annotation is bool:
@@ -206,6 +211,19 @@ class SchemaWriter:
         if isinstance(annotation, type) and dataclasses.is_dataclass(annotation):
             return {"$ref": self.registry.reference(annotation, self.variant)}
         raise SchemaError(f"{location}: unsupported type {annotation!r}")
+
+    def _secret(self, inner: object, location: str, constraints: ConstraintValues) -> JsonSchema:
+        """A secret is read as its type and written as a mask (section 6.6)."""
+        if self.serializing:
+            return {"type": "string", "const": MASK}
+        schema = {**self.schema(inner, location, constraints), "writeOnly": True}
+        if (
+            schema.get("type") == "string"
+            and "format" not in schema
+            and "contentEncoding" not in schema
+        ):
+            schema["format"] = "password"
+        return schema
 
     def _with_text(self, schema: JsonSchema, pattern: str) -> JsonSchema:
         """Lax mode also reads the type from text."""
@@ -595,6 +613,8 @@ def _keeps_empty(annotation: object) -> bool:
     """Whether the empty string is a value of the type, so that lax mode keeps it there instead
     of reading it as ``None`` (section 4.5)."""
     annotation, _, _, _ = unwrap_annotated(annotation, "", {})
+    if typing.get_origin(annotation) is Secret:
+        return _keeps_empty(typing.get_args(annotation)[0])
     if annotation is Any or annotation is str or annotation is bytes or annotation is bytearray:
         return True
     if typing.get_origin(annotation) is typing.Literal:
@@ -627,7 +647,7 @@ def _description(cls: type) -> str | None:
 def _default_json(default: Default, annotation: object) -> object:
     """The default as JSON, or ``_NO_DEFAULT`` for a factory and for a value that cannot be
     written."""
-    if default is None or default[0] != "value":
+    if default is None or default[0] != "value" or isinstance(default[1], Secret):
         return _NO_DEFAULT
     try:
         return json.loads(json_encode(default[1], type=annotation))

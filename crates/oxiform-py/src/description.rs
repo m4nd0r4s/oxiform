@@ -62,6 +62,8 @@ pub(crate) struct Runtime {
     pub(crate) structs: Vec<StructRuntime>,
     pub(crate) choices: Vec<Vec<Py<PyAny>>>,
     pub(crate) conversions: Vec<Py<PyAny>>,
+    /// The class a `Secret` node wraps its value in (`oxiform._secret.Secret`).
+    pub(crate) secret_class: Py<PyAny>,
 }
 
 /// Converts a Python `Description`.
@@ -72,6 +74,7 @@ pub(crate) fn read_description(description: &Bound<'_, PyAny>) -> PyResult<(Desc
         structs: Vec::new(),
         choices: Vec::new(),
         conversions: Vec::new(),
+        secret_class: description.getattr("secret_class")?.unbind(),
     };
     for struct_description in description.getattr("structs")?.try_iter()? {
         let (struct_description, struct_runtime) = read_struct(&struct_description?)?;
@@ -264,6 +267,7 @@ fn read_type(description: &Bound<'_, PyAny>) -> PyResult<TypeDescription> {
             constraints: read_constraints(&parts.get_item(2)?)?,
         },
         "optional" => TypeDescription::Optional(Box::new(read_type(&parts.get_item(1)?)?)),
+        "secret" => TypeDescription::Secret(Box::new(read_type(&parts.get_item(1)?)?)),
         "struct" => TypeDescription::Struct(parts.get_item(1)?.extract()?),
         "union" => TypeDescription::Union(read_types(&parts.get_item(1)?)?),
         "untagged" => TypeDescription::Untagged(read_types(&parts.get_item(1)?)?),

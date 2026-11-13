@@ -32,6 +32,8 @@ pub enum Value {
     Set(Vec<Value>, bool),
     /// A choice index and the index of the value.
     Choice(usize, u32),
+    /// What a `Secret` was built from.
+    Secret(Box<Value>),
     /// A structure index and its fields; `None` for a field that takes its default.
     Instance(usize, Vec<Option<Value>>),
 }
@@ -89,6 +91,9 @@ impl Sink for ValueSink {
     }
     fn choice(&mut self, choice: ChoiceId, index: u32) -> Result<Value, Infallible> {
         Ok(Value::Choice(choice.index(), index))
+    }
+    fn secret(&mut self, value: Value) -> Result<Value, Infallible> {
+        Ok(Value::Secret(Box::new(value)))
     }
     fn map_new(&mut self) -> Result<Self::Map, Infallible> {
         Ok(Vec::new())

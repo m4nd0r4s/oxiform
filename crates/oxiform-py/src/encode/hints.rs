@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 
 use super::fields::{EncodeHint, HintMode, field_table};
-use super::{EncodeFailure, ObjectWalker, key_text};
+use super::{EncodeFailure, ObjectWalker, SECRET_MASK, key_text};
 
 impl<W: EventWriter> ObjectWalker<'_, W> {
     /// Writes `object`, declared with the type that `hint` describes.
@@ -16,6 +16,14 @@ impl<W: EventWriter> ObjectWalker<'_, W> {
         hint: &EncodeHint,
     ) -> Result<(), EncodeFailure> {
         match hint {
+            EncodeHint::Secret => {
+                if object.is_none() {
+                    self.writer.null();
+                } else {
+                    self.writer.string(SECRET_MASK);
+                }
+                Ok(())
+            }
             EncodeHint::List(items) => match object.cast::<PyList>() {
                 Ok(list) => self.hinted_list(list, items),
                 Err(_) => self.value(object),

@@ -74,6 +74,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             max_errors: self.max_errors,
             unknown: self.unknown,
             issues: Vec::new(),
+            secret_depth: self.secret_depth,
         };
         let outcome = read(&mut nested, events[0].clone());
         (outcome, nested.issues)

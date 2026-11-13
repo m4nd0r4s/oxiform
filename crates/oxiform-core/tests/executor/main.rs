@@ -7,6 +7,7 @@ mod lax;
 mod limits;
 mod pairs;
 mod scalars;
+mod secret;
 mod structs;
 mod support;
 mod temporal;

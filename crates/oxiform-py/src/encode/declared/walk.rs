@@ -14,7 +14,7 @@ use pyo3::types::{
 
 use super::{Declared, DeclaredField, DeclaredPlan, Leaf, StructSpec};
 use crate::encode::fields::{HintMode, field_table};
-use crate::encode::{EncodeFailure, ObjectWalker, key_text, sorted_items};
+use crate::encode::{EncodeFailure, ObjectWalker, SECRET_MASK, key_text, sorted_items};
 use crate::slots::read_slot;
 
 /// A key, its value, and the declared type of the value.
@@ -62,6 +62,10 @@ impl<W: EventWriter> ObjectWalker<'_, W> {
     ) -> Result<(), EncodeFailure> {
         match node {
             Declared::Any => self.value(object),
+            Declared::Secret => {
+                self.writer.string(SECRET_MASK);
+                Ok(())
+            }
             Declared::Leaf(Leaf { name, .. }) | Declared::Literal { name, .. } => {
                 self.scalar(plan, node, name, object)
             }
@@ -670,6 +674,7 @@ fn matches(
         }
         // These are not variants of a union.
         Declared::Any
+        | Declared::Secret
         | Declared::Optional(_)
         | Declared::Union { .. }
         | Declared::Tagged { .. }

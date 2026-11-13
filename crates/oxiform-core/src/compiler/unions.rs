@@ -66,7 +66,8 @@ impl Compiler<'_> {
                 TypeDescription::Any
                 | TypeDescription::Optional(_)
                 | TypeDescription::Union(_)
-                | TypeDescription::Untagged(_) => {
+                | TypeDescription::Untagged(_)
+                | TypeDescription::Secret(_) => {
                     return Err(declaration_error(
                         location,
                         format!("{name} cannot be a variant of a union"),
@@ -307,6 +308,7 @@ fn type_name(description: &TypeDescription, whole: &Description) -> String {
             .map_or_else(|| format!("choice {index}"), |c| c.name.clone()),
         TypeDescription::Dict { .. } => "dict".into(),
         TypeDescription::Optional(inner) => format!("{} | None", type_name(inner, whole)),
+        TypeDescription::Secret(inner) => format!("Secret[{}]", type_name(inner, whole)),
         TypeDescription::Struct(index) => whole
             .structs
             .get(*index)

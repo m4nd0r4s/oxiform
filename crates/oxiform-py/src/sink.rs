@@ -147,6 +147,15 @@ impl<'py> Sink for PythonSink<'_, 'py> {
         }
     }
 
+    /// Wraps `value` in the `ox.Secret` class.
+    fn secret(&mut self, value: Self::Value) -> PyResult<Self::Value> {
+        self.compiled
+            .runtime
+            .secret_class
+            .bind(self.py)
+            .call1((value,))
+    }
+
     fn list(&mut self, items: Vec<Self::Value>) -> PyResult<Self::Value> {
         Ok(PyList::new(self.py, items)?.into_any())
     }

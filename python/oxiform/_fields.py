@@ -27,6 +27,8 @@ class FieldOptions:
     flatten: bool = False
     constraints: tuple[object, ...] = ()
     """Constraints from the shortcuts (``ge=0`` is ``Ge(0)``), applied like ``Annotated``."""
+    env: str | None = None
+    """The exact environment variable a config field is read from (section 6.1)."""
 
 
 _NO_OPTIONS = FieldOptions()
@@ -51,6 +53,7 @@ def field(
     skip_if_default: bool = False,
     skip_if_none: bool = False,
     flatten: bool = False,
+    env: str | None = None,
     ge: int | float | None = None,
     le: int | float | None = None,
     min_len: int | None = None,
@@ -66,6 +69,9 @@ def field(
     - ``skip_if``, ``skip_if_default`` and ``skip_if_none`` leave the field out of the output
       when the predicate holds, when it equals its default, or when it is ``None``.
     - ``flatten`` writes and reads the fields of a nested model at the same level.
+    - ``env`` is, in a config (``@ox.config``), the exact environment variable the field is read
+      from: no ``env_prefix`` is added, and the field is read from that name wherever it is
+      nested. Other models ignore it.
     - ``ge``, ``le``, ``min_len``, ``max_len`` and ``pattern`` are shortcuts for ``Ge``,
       ``Le``, ``Len`` and ``Pattern``.
     """
@@ -78,6 +84,11 @@ def field(
         constraints.append(Len(min_len or 0, max_len))
     if pattern is not None:
         constraints.append(Pattern(pattern))
+    if env is not None and (not isinstance(env, str) or not env):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise ValueError(
+            f"env must be the name of an environment variable such as 'WEB_CONCURRENCY', "
+            f"not {env!r}"
+        )
     options = FieldOptions(
         rename=rename,
         aliases=tuple(aliases),
@@ -88,6 +99,7 @@ def field(
         skip_if_none=skip_if_none,
         flatten=flatten,
         constraints=tuple(constraints),
+        env=env,
     )
     return dataclasses.field(
         default=default,

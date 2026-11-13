@@ -55,6 +55,8 @@ pub(super) enum EncodeHint {
     },
     List(Box<EncodeHint>),
     Dict(Box<EncodeHint>),
+    /// Declared as `ox.Secret[T]`: written as a mask whatever the value is.
+    Secret,
 }
 
 pub(super) enum HintMode {
@@ -222,6 +224,7 @@ fn read_hint(hint: &Bound<'_, PyAny>) -> PyResult<EncodeHint> {
     Ok(match parts.get_item(0)?.extract::<String>()?.as_str() {
         "list" => EncodeHint::List(Box::new(read_hint(&parts.get_item(1)?)?)),
         "dict" => EncodeHint::Dict(Box::new(read_hint(&parts.get_item(1)?)?)),
+        "secret" => EncodeHint::Secret,
         _ => {
             let mode = match parts.get_item(1)?.extract::<String>()?.as_str() {
                 "internal" => HintMode::Internal(parts.get_item(2)?.extract()?),

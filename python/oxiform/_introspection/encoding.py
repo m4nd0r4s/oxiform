@@ -10,6 +10,7 @@ from oxiform._introspection.fields import checked_options, default_of, tag_of, w
 from oxiform._introspection.model import Default
 from oxiform._introspection.unions import is_union, union_mode, without_none
 from oxiform._model_options import model_options
+from oxiform._secret import Secret
 from oxiform.unions import External, Tagged
 
 __all__ = ["EncodeHint", "EncodedField", "encoded_fields"]
@@ -23,9 +24,11 @@ EncodeHint: TypeAlias = (
         dict[type, str],
     ]
     | tuple[Literal["list", "dict"], "EncodeHint"]
+    | tuple[Literal["secret"]]
 )
 """What the declared type of a field adds to its runtime value: the tag of a tagged union,
-by class, or a hint for the items of a list or the values of a dict."""
+by class, a hint for the items of a list or the values of a dict, or ``("secret",)``: whatever
+the value is, it is written as a mask."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,8 @@ def encoded_fields(cls: type) -> tuple[EncodedField, ...]:
 def encode_hint(annotation: object) -> EncodeHint | None:
     """The hint for a value declared as ``annotation``, or ``None`` when its runtime type says
     everything."""
+    if annotation is Secret or typing.get_origin(annotation) is Secret:
+        return ("secret",)
     if typing.get_origin(annotation) is Annotated:
         inner, *metadata = typing.get_args(annotation)
         mode = union_mode(metadata, "")

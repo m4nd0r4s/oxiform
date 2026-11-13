@@ -43,6 +43,9 @@ pub enum Node {
     Tagged(Box<TaggedPlan>),
     /// The variants to try, in order, with their names.
     Untagged(Vec<(String, NodeId)>),
+    /// A secret: the inner node is read with every issue stripped of the received value, and
+    /// the sink wraps the result.
+    Secret(NodeId),
 }
 
 /// The variant read for each kind of value. A number is read as `integer` when it has no

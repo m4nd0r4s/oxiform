@@ -20,11 +20,14 @@ lookups:
 - ``("tagged", mode, tag, content, variants)``, chosen by a tag; ``mode`` is ``"internal"``,
   ``"adjacent"`` (with ``content``) or ``"external"`` (without ``tag``)
 - ``("untagged", variants)``, trying each in order
+- ``("secret", inner)``: ``ox.Secret[T]``, read as ``inner`` and wrapped in ``secret_class``
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
+
+from oxiform._secret import Secret
 
 __all__ = [
     "ChoiceDescription",
@@ -61,7 +64,7 @@ TypeDescription: TypeAlias = (
     ]
     | tuple[Literal["tuple"], tuple["TypeDescription", ...]]
     | tuple[Literal["choice"], int]
-    | tuple[Literal["optional"], "TypeDescription"]
+    | tuple[Literal["optional", "secret"], "TypeDescription"]
     | tuple[Literal["struct"], int]
     | tuple[Literal["union", "untagged"], tuple["TypeDescription", ...]]
     | tuple[
@@ -155,3 +158,5 @@ class Description:
     structs: tuple[StructDescription, ...]
     choices: tuple[ChoiceDescription, ...]
     conversions: tuple[ConversionDescription, ...]
+    secret_class: type = Secret
+    """What a ``("secret", ...)`` node wraps its value in."""

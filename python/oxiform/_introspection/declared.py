@@ -4,6 +4,7 @@
 the Rust walker, in tuples whose first item is the kind:
 
 - ``("any",)``: written by the class of the value
+- ``("secret",)``: ``ox.Secret[T]``, written as a mask whatever the value is
 - ``("leaf", name, classes, excluded, lenient)``: a scalar, or any class that has no fields to
   filter. ``classes`` are what an ``isinstance`` check in a union looks for, ``excluded`` the
   classes that do not count (``bool`` for ``int``) and ``lenient`` those accepted as a last
@@ -32,6 +33,7 @@ from oxiform._introspection.encoding import EncodedField, encoded_fields
 from oxiform._introspection.fields import tag_of
 from oxiform._introspection.unions import UnionMode, is_union, union_mode, without_none
 from oxiform._model_options import model_options
+from oxiform._secret import Secret
 from oxiform.unions import External, Tagged, Untagged
 
 __all__ = ["DeclaredDescription", "DeclaredField", "DeclaredStruct", "declared_description"]
@@ -94,6 +96,8 @@ class _Builder:
             mode = found if found is not None else mode
         if annotation is Any or annotation is object:
             return ("any",)
+        if annotation is Secret or typing.get_origin(annotation) is Secret:
+            return ("secret",)
         if mode is not None and is_union(annotation):
             return self._marked_union(annotation, mode)
         if is_union(annotation):
@@ -241,6 +245,8 @@ def _name(variant: DeclaredType) -> str:
             return f"{kind}[{_name(item)}]"
         case ("tuple", items):
             return f"tuple[{', '.join(_name(item) for item in items)}]"
+        case ("secret",):
+            return "Secret"
         case ("optional", inner):
             return f"{_name(inner)} | None"
         case ("union" | "tagged" | "untagged", name, *_):

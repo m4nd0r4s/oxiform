@@ -14,6 +14,7 @@ from oxiform._json_schema import (
 from oxiform._models import Model, model, replace
 from oxiform._naive import NaiveDateTime
 from oxiform._oxiform import Limits, __version__, warmup
+from oxiform._secret import Secret
 from oxiform.constraints import Ge, Le, Len, OneOf, Pattern
 from oxiform.errors import (
     DecodeError,
@@ -43,6 +44,7 @@ __all__ = [
     "SchemaError",
     "SchemaMode",
     "SchemaTarget",
+    "Secret",
     "Tagged",
     "Untagged",
     "ValidationError",

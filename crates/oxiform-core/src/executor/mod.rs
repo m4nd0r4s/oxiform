@@ -53,6 +53,7 @@ where
         max_errors: options.max_errors.max(1),
         unknown: options.unknown,
         issues: Vec::new(),
+        secret_depth: 0,
     };
     let outcome = executor.run();
     executor.finish(outcome)
@@ -86,6 +87,7 @@ where
         max_errors: options.max_errors.max(1),
         unknown: options.unknown,
         issues: Vec::new(),
+        secret_depth: 0,
     };
     let outcome = executor.run_pairs(fold_case);
     executor.finish(outcome)
@@ -114,6 +116,9 @@ pub(crate) struct Executor<'run, 'input, R, S> {
     /// Overrides the `unknown_fields` of every structure when set.
     unknown: Option<UnknownFields>,
     issues: Vec<Issue>,
+    /// How many `Secret` nodes enclose the value being read: above 0, an issue does not quote
+    /// the received value.
+    secret_depth: u32,
 }
 
 impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
@@ -184,6 +189,20 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             Node::Union(union) => self.union(union, event),
             Node::Tagged(tagged) => self.tagged(tagged, event),
             Node::Untagged(variants) => self.untagged(variants, event),
+            Node::Secret(inner) => self.secret(*inner, event),
+        }
+    }
+
+    /// Reads a secret: the inner value with its issues stripped of the received text, wrapped
+    /// by the sink.
+    #[cold]
+    fn secret(&mut self, inner: NodeId, event: Event<'input>) -> Step<S> {
+        self.secret_depth += 1;
+        let read = self.value(inner, event);
+        self.secret_depth -= 1;
+        match read? {
+            Some(value) => self.sink.secret(value).map(Some).map_err(Stop::Sink),
+            None => Ok(None),
         }
     }
 
@@ -215,7 +234,7 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
             code,
             path,
             message,
-            input,
+            input: if self.secret_depth > 0 { None } else { input },
             context,
         });
         if self.issues.len() >= self.max_errors {

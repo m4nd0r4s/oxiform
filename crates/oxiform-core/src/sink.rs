@@ -38,6 +38,8 @@ pub trait Sink {
         conversion: ConversionId,
         raw: Self::Value,
     ) -> Result<Option<Self::Value>, Self::Error>;
+    /// A secret holding `value`, which was read as the inner type of `ox.Secret[T]`.
+    fn secret(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error>;
     fn map_new(&mut self) -> Result<Self::Map, Self::Error>;
     /// Inserts an entry. Returns `false`, leaving the map unchanged, when `key` is already in it.
     fn map_insert(

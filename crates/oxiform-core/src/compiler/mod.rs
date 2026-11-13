@@ -99,7 +99,7 @@ impl Compiler<'_> {
                 .values
                 .iter()
                 .any(|value| matches!(value, ChoiceValue::String(text) if text.is_empty())),
-            Node::Optional { inner, .. } => self.accepts_empty_text(*inner),
+            Node::Optional { inner, .. } | Node::Secret(inner) => self.accepts_empty_text(*inner),
             Node::Union(union) => union
                 .string
                 .is_some_and(|string| self.accepts_empty_text(string)),
@@ -265,6 +265,15 @@ impl Compiler<'_> {
                 self.compile_tagged(mode, variants, location)?
             }
             TypeDescription::Untagged(variants) => self.compile_untagged(variants, location)?,
+            TypeDescription::Secret(inner) => {
+                if matches!(**inner, TypeDescription::Secret(_)) {
+                    return Err(declaration_error(
+                        location,
+                        "a Secret cannot hold a Secret: it already hides its value",
+                    ));
+                }
+                Node::Secret(self.compile_type(inner, location)?)
+            }
         };
         Ok(self.push(node))
     }
