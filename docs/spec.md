@@ -205,7 +205,7 @@ class Product:
 - **Shortcuts in `ox.field`:** accepts the single-value constraints: `ge`, `gt`, `le`, `lt`, `multiple_of`, `min_len`, `max_len`, `pattern`. The others are declared with `Annotated`.
 - **Transformations** run after the type and before the checks, in the order they appear.
 - **Compatibility:** a constraint on a type where it makes no sense (`Strip` on an `int`, `Ge` on a `list`) is a declaration error.
-- **`Pattern`** uses the `regex` crate, without backtracking. Lookaround and backreferences are a declaration error. It searches anywhere in the text (like `re.search` and the JSON Schema `pattern`); to match the whole text, anchor with `^…$`.
+- **`Pattern`** uses the `regex` crate, without backtracking. Lookaround and backreferences are a declaration error. It searches anywhere in the text (like `re.search` and the JSON Schema `pattern`); to match the whole text, anchor with `^…$`. A JSON Schema `pattern` is ECMA 262, so writing the schema of a constraint that has no such form (inline flags, `\p{..}` classes) is a declaration error (section 8.5).
 - **`Unique`** requires hashable elements, checked at declaration.
 - **Constraints are values.** Two constraints are equal when they are the same constraint with the same values *and the same value types*: `Ge(1)`, `Ge(1.0)` and `Ge(True)` are three different constraints, and `Ge(0.0)` differs from `Ge(-0.0)`. Plans are cached by type, and `typing` caches `Annotated[...]` aliases by the equality of their metadata, so a constraint that compared equal across types (`1 == True`) would hand back the alias, and the plan, of another declaration, hiding a declaration error such as `Ge(True)`. The same holds for oxiform's own cache keys, such as the values of a `Literal`.
 - **`Past` and `Future`** compare against the clock read at the start of the decode.
@@ -858,18 +858,19 @@ bundle.schemas[2]           # {"type": "array", "items": {"$ref": "#/components/
 | `bool`, `int`, `float`, `str`, `None` | `boolean`, `integer`, `number`, `string`, `null` |
 | `Ge`, `Le` | `minimum`, `maximum` |
 | `Len` | `minLength`, `maxLength` on `str`; `minItems`, `maxItems` on arrays; `minProperties`, `maxProperties` on `dict`. Not stated on `bytes`, whose length is that of the decoded bytes |
-| `Pattern`, `OneOf` | `pattern`, `enum` |
-| `bytes`, `bytearray` | `{"type": "string", "contentEncoding": "base64"}` |
+| `Pattern`, `OneOf` | `pattern` (the dialect is described below), `enum` |
+| `bytes`, `bytearray` | `{"type": "string", "contentEncoding": "base64", "pattern": ...}`: padded base64 with zero trailing bits, the one form that is read |
 | `datetime`, `date` | `format: "date-time"`, `format: "date"` |
 | `ox.NaiveDateTime`, `time` | `string` with a `pattern` (a `datetime` without offset; a time with an optional offset), because no `format` says that |
 | `timedelta` | `format: "duration"` |
 | `UUID`, `IPv4Address`, `IPv6Address` | `format: "uuid"`, `"ipv4"`, `"ipv6"` |
 | `IPv4Network`, `IPv6Network`, `IPv4Interface`, `IPv6Interface`, `Path` and the other path classes, `ZoneInfo` | `string` with `format: "ipv4-network"`, `"ipv6-network"`, `"ipv4-interface"`, `"ipv6-interface"`, `"path"`, `"zoneinfo"` |
-| `Decimal` | `string` with `format: "decimal"` (validation: also a `number`) |
-| `Flag` | `integer` |
+| `Decimal` | `string` with `format: "decimal"` and a `pattern` of the text `Decimal` reads, `Infinity` and `NaN` included (validation: also a `number`) |
+| `Flag` (strict boundary, as `enum.Flag`) | `integer` with the `enum` of the integers it takes: each combination of members and its complement, so a `Flag` with members 1 and 4 takes `-8, -7, -4, -3, 0, 1, 4, 5`; for more than 1023 possible values, the `minimum` and `maximum` of that range |
+| `IntFlag` and any flag that keeps or conforms unknown bits | `integer`, with no bounds |
 | `list[T]`, `tuple[T, ...]` | `array` with `items` |
-| `set[T]`, `frozenset[T]` | `array` with `items` and `uniqueItems` |
-| `tuple[A, B]` | `array` with `prefixItems`, `minItems` and `maxItems` |
+| `set[T]`, `frozenset[T]` | `array` with `items`; in serialization also `uniqueItems`, because a set is written without repeats, while decode reads a repeat as one item (`[1, 1]` is `{1}`) |
+| `tuple[A, B]`, `tuple[()]` | `array` with `prefixItems`, `minItems` and `maxItems`; the empty tuple is `{"type": "array", "maxItems": 0}` |
 | `dict[str, T]` | `object` with `additionalProperties` |
 | `Any`, a bare `list`, `dict`, `tuple`, `set`, `frozenset` | `{}`, and the bare container with `Any` items |
 | `Literal[...]` | `const` for one value, else `enum`; written in place |
@@ -881,9 +882,20 @@ bundle.schemas[2]           # {"type": "array", "items": {"$ref": "#/components/
 
 **Tagged unions.**
 
-- *Internal* (`ox.Tagged("type")`, or models that declare the same `tag_field`): a variant whose model declares the tag field is `{"allOf": [{"$ref": Model}, {"required": ["type"]}]}`; one that does not is `{"allOf": [{"$ref": Model}, {"properties": {"type": {"const": "card"}}, "required": ["type"]}]}`, and written in place with the tag among its properties when the model is `unknown="forbid"`, because `additionalProperties` cannot see through `allOf`. When every variant declares the tag field the union also has an OpenAPI `discriminator` (`propertyName`, and a `mapping` from each tag to the `$ref`); consumers that do not know the keyword ignore it.
+- *Internal* (`ox.Tagged("type")`, or models that declare the same `tag_field`): a variant whose model declares the tag field is `{"$ref": Model, "required": ["type"]}`, a plain reference (the keyword beside it makes the union require the tag that the model alone does not), which is what the `discriminator` of OpenAPI 3.1 tooling reads; one that does not is `{"allOf": [{"$ref": Model}, {"properties": {"type": {"const": "card"}}, "required": ["type"]}]}`, and written in place with the tag among its properties when the model is `unknown="forbid"`, because `additionalProperties` cannot see through `allOf`. When every variant declares the tag field the union also has an OpenAPI `discriminator` (`propertyName`, and a `mapping` from each tag to the `$ref`); consumers that do not know the keyword ignore it.
 - *Adjacent* (`content=`): `{"type": "object", "properties": {tag: {"const": ...}, content: variant}, "required": [tag, content]}`.
 - *External*: `{"type": "object", "properties": {tag: variant}, "required": [tag], "additionalProperties": false}`.
+
+**`Pattern` dialect.** `Pattern` is a Rust `regex` (section 4.1) and a JSON Schema `pattern` is ECMA 262, so a pattern is carried over only where both mean the same. Written as it is: literals, classes, groups, alternation, repetition, anchors and the escapes they share. Translated: `\d` and `\w` to the ASCII classes `[0-9]` and `[A-Za-z0-9_]` (`\D` and `\W` to their negations outside a class), `(?P<name>` to `(?<name>`, `\A` and `\z` to `^` and `$`. Refused with an `ox.SchemaError` that names the construct and says to write it with plain classes: inline flags and flag groups (`(?i)`, `(?s:`), Unicode classes (`\pL`, `\p{Greek}`), POSIX classes, nested classes and class operations (`[a-z&&[^b]]`), `\x{..}` and `\U`, and `\D` or `\W` inside a class. Decoding never needs the schema, so such a pattern is an error only when a schema is written. Two differences remain that the schema cannot say: the decoder reads `\d` and `\w` in Unicode (`"٣"` matches `^\d$`), the schema in ASCII, and `\b` and `\s` are Unicode in Rust and ASCII-word and JavaScript-space in ECMA 262.
+
+**Where the schema and the decoder differ.** For every type of the table the schema accepts exactly what `decode` accepts in the same mode, which `tests/test_json_schema_differential.py` checks over many inputs, except:
+
+- *An `integer` is any number without a fraction* in JSON Schema, so `1.0`, `2.0` and `1e2` pass where strict decode refuses them (and lax decode refuses `1e2`). No keyword says "written without a point".
+- *Lax text and limits.* In lax mode the numeric branch carries `minimum` and `maximum`, and the text branch cannot: `"1"` passes the schema of `Annotated[int, Ge(5)]` in lax mode, and decode rejects it. A `OneOf` is carried to the text branch (as a pattern of the spellings of each value); a `Flag` and a `Literal` too.
+- *Formats are annotations.* `date-time`, `date`, `duration`, `uuid`, `ipv4`, `ipv6` and the others of the table are not asserted by a validator unless it is asked to, and the engine also reads forms they do not (a space instead of `T`): the schema says what the text is, and the engine decides what it reads. Text types that have no `pattern` (`UUID`, `ZoneInfo`, `Path`, the `ipaddress` classes, `date`, `datetime`, `timedelta`) are compared only on non-text values in that test.
+- *Aliases.* An object that gives a field under its wire name and under an alias is valid for the schema and a `duplicate_key` error for the engine. Each alias is a `deprecated` property of the same schema, and the field is required by any of its names.
+- *`Len` on `bytes`* counts decoded bytes and is not stated.
+- *`default`* is given for a value that is JSON and left out for a factory.
 
 **Names.** A definition is named after its class (`__qualname__`, after the last `<locals>.`), with every character outside `A-Z a-z 0-9 . _ -` written as `_`, so that the name is a valid OpenAPI component name and a JSON Pointer token. Names are decided by the set of types in the bundle and never by the order of `targets`:
 
@@ -893,7 +905,7 @@ bundle.schemas[2]           # {"type": "array", "items": {"$ref": "#/components/
 
 **`ref_template`** is a `str` with `{name}` exactly once; anything else is a `ValueError` that shows an example. `$ref` values, and the `mapping` of a `discriminator`, are the template with the name put in.
 
-**Errors.** A type oxiform cannot read, a misplaced constraint, an ambiguous union and a model that refers to a class not defined yet are `ox.SchemaError`, exactly as in `decode` (the types are compiled first). A bad argument is a `TypeError` or a `ValueError` that says what to pass: `targets` that is not a list (`ox.json_schema_bundle(User)` says to call `ox.json_schema(User)` or pass `[User]`), a `mode` or `coercion` outside the values above, `coercion="lax"` with `mode="serialization"`, a bad `ref_template`.
+**Errors.** A type oxiform cannot read, a misplaced constraint, an ambiguous union and a model that refers to a class not defined yet are `ox.SchemaError`, exactly as in `decode` (the types are compiled first). A bad argument is a `TypeError` or a `ValueError` that says what to pass: `targets` that is not a list or a tuple (`ox.json_schema_bundle(User)` says to call `ox.json_schema(User)` or pass `[User]`, and a `set` or a `dict` is refused because its order is not the order of the schemas), a `mode` or `coercion` outside the values above, `coercion="lax"` with `mode="serialization"`, a bad `ref_template`.
 
 **Not yet.** `@ox.computed` fields (section 3.4), `ox.Secret`, `ox.Raw`, `doc`, `examples` and `deprecated` on fields (section 5.2), `ox.Policy` (a schema describes the default policy), `__oxiform_schema__` and the `ox schema` command join this section when they join the library. A `default` that cannot be written as JSON is left out.
 
@@ -1161,6 +1173,7 @@ ox.codecs.decimal_as_number        # ready-made codecs for ox.field(codec=...)
 ox.json_schema(type, *, mode="validation" | "serialization", coercion="strict" | "lax") -> dict   # section 8.5
 ox.json_schema_bundle(targets, *, mode="validation", coercion="strict", ref_template="#/$defs/{name}") -> ox.SchemaBundle
 ox.SchemaTarget(type, mode=None, coercion=None); ox.SchemaBundle    # .defs, .schemas, .targets, .schema_for(target)
+ox.JsonSchema = dict[str, Any]; ox.SchemaMode; ox.SchemaCoercion   # the types of the arguments and of bundle.defs
 ox.explain(type) -> ox.Explanation; ox.warmup(*types)
 
 # --- config: from oxiform import config as cfg ---
