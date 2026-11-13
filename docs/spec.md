@@ -6,7 +6,7 @@
 
 ## 1. Decisions made
 
-D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. D23 is the outcome of gate G1 at the end of phase 0. The rest of the spec already applies them.
+D1–D13 close the 7 open questions from the review and 6 defaults that were implicit. D14–D22 come from the 2026-10-31 review, which resolved inconsistencies and fixed what was missing to start the implementation. D23 is the outcome of gate G1 at the end of phase 0. D24 and D25 come from the config slice (porto-309.14). The rest of the spec already applies them.
 
 | # | Decision | Choice | Why |
 | --- | --- | --- | --- |
@@ -33,6 +33,8 @@ D1–D13 close the 7 open questions from the review and 6 defaults that were imp
 | D21 | Wheels | One wheel per Python version (no abi3) | The performance target needs the full C-API, and abi3 does not exist in free-threaded |
 | D22 | Format readers | Own event interface (numbers as raw text, positions) and an own pull reader for JSON, chosen over sonic-rs in phase 0 | Serde does not preserve the text of numbers nor detect duplicate keys, and sonic-rs offers no pull interface: going through its DOM adds a tree that the single pass avoids. The interface is the stable contract; the backend is replaceable |
 | D23 | Value proposition (gate G1) | Multi-format, validation and config, with JSON speed close to msgspec (at most 2×) and well ahead of pydantic (at least 2×), instead of "the fastest" | The phase 0 prototype decodes at 1.2–1.8× the time of msgspec and 2–4× faster than pydantic v2. Closing the rest needs a native model layout and a SIMD structural reader, which would delay every other feature; that work continues alongside the next phases |
+| D24 | Names of the config API | `@ox.config` is the decorator and `oxiform.cfg` (`from oxiform import cfg`) is the namespace of `load`, the sources and `origin` | A module cannot be a typed dataclass transform, so `ox.config` has to be a function, and the same name cannot also be the module of the sources |
+| D25 | `ox.Secret` and encoding | Encode always writes `"********"` for a secret, in every format, with no switch; the value leaves only through `.reveal()` | A secret that can be written by a flag is one typo from a log line. `ox.Policy(secrets="reveal")` joins when `ox.Policy` does |
 
 ## 2. Scope
 
@@ -544,7 +546,7 @@ By default each format's native representation is used; `ox.Policy` changes it p
 - **TOML has no null.** `None` omits the field, and on read a missing `T | None` field is read as `None` (TOML only). `None` inside an array, or a document whose top level is not a table, gives `EncodeError`.
 - **YAML 1.2:** `yes`, `no`, `on`, `off` are strings, not booleans. The core schema has no timestamp type, so dates are ISO strings, as in JSON.
 - **Sets** are written sorted when the elements are comparable, so that the same value always produces the same bytes (section 10.2).
-- **`ox.Secret`** is written as `"********"`; `ox.Policy(secrets="reveal")` writes the real value (for example, to generate a config file).
+- **`ox.Secret`** is written as `"********"` in every format and under every policy that exists today (D25, section 6.6); `ox.Policy(secrets="reveal")`, which will write the real value (for example, to generate a config file), joins when `ox.Policy` does, and until then `secret.reveal()` is the explicit way out.
 
 ```python
 ox.json.encode(x, policy=ox.Policy(decimal="number", bytes="hex", datetime="unix_ms"))
@@ -587,26 +589,32 @@ ox.pairs.decode(pairs, type, *, case_insensitive=False, limits=None, max_errors=
 - **Problems are ready to combine** (section 4.7): paths start with the wire name of the field, so `e.with_source("query")` gives `/query/page`, `ValidationError.combine` merges them with a body's, and `unreadable_sources()` names a query that could not be read.
 - The plan is the one of `ox.json.decode` for the same type: there is one plan cache, and decoding a model from a query string compiles nothing that JSON had not.
 
-## 6. Layered configuration (`oxiform.config`)
+## 6. Layered configuration (`@ox.config` and `oxiform.cfg`)
 
 A config is an oxiform model loaded from several sources in priority order, merged and validated once at the end. Each value remembers where it came from.
 
+**What exists today.** `@ox.config`, `env_prefix` and `env_nested`, the sources `cfg.file` (TOML and JSON), `cfg.pyproject`, `cfg.dotenv`, `cfg.env` and `cfg.mapping`, `cfg.load`, `cfg.origin`, `cfg.origins`, `cfg.dump` and `ox.Secret[T]` (section 6.6). It is the slice that `douro.ServerConfig` needs (porto-309.14). The rest of this section is the design; what is not built yet is listed in section 6.7, and every later source and option fits the API below as a new source or keyword.
+
+**Where the names live (D24).** The decorator is `ox.config`, so that a type checker reads `@ox.config` as a dataclass transform like `@ox.model`; a module cannot be one, so the namespace of everything else is `oxiform.cfg`: `from oxiform import cfg`.
+
 ### 6.1 Declaring
 
-`@ox.config` is `@ox.model` with the config defaults (D14): `kw_only=True`, `frozen=True` and `unknown="forbid"` (D9).
+`@ox.config` is `@ox.model` with the config defaults (D14): `kw_only=True`, `frozen=True` and `unknown="forbid"` (D9). Its options are `env_prefix=""`, `env_nested="__"`, `rename_all=None` and `unknown="forbid"`.
 
 - **Free order:** fields are by name only, so required and optional fields can come in any order.
 - **Sections** are nested configs, also declared with `@ox.config`.
-  - Applies to any model inside a config, including elements of collections; another kind of model is a declaration error, with a suggestion.
-  - `env_prefix` and `env_nested` only count on the type passed to `cfg.load`.
-- **Optional section:** write `= Server()`. Sharing the default instance is safe because it is immutable, and the type checker sees the default.
-- **Collections:** use `tuple[T, ...]`, `frozenset[T]` and `Mapping[K, V]`. `list`, `set` and `dict` are a declaration error, with the right type suggested.
-  - `Mapping` is materialized as a read-only mapping. It is picklable, and the concrete type is not public API.
+  - Applies to any model inside a config, including elements of collections and variants of a union; another kind of model is a `SchemaError` that says to declare it with `@ox.config`. A class defined later is checked on first load.
+  - `env_prefix`, `env_nested` and `rename_all` of a section are used only when the section is the type given to `cfg.load`; inside another config the options of the outer type decide (so a section can be shared by two configs).
+- **Optional section:** write `= Server()`. Sharing the default instance is safe because it is immutable, and the type checker sees the default. `Server | None = None` is a section too: it stays `None` until a source sets one of its keys.
+- **Collections:** use `tuple[T, ...]` and `frozenset[T]`. `list`, `set` and `dict` (bare or parameterized) are a `SchemaError` with the right type suggested. `Mapping[K, V]` (a read-only mapping) is not built yet (section 6.7) and is refused with the same kind of message.
+- **Other refusals** at declaration: a flattened field (`ox.field(flatten=True)`: a source cannot say where a flattened section starts), `ox.field(env=...)` that is not a non-empty `str`, and an `env_nested` that is not a non-empty `str` or `None`.
+- `ox.field(env="WEB_CONCURRENCY")` gives the field the exact environment variable name, without `env_prefix` and wherever the field is nested; the derived name (section 6.2) is then not read.
+- Instances are built by `cfg.load`, by calling the class (which checks only the top-level types, D3) or by `ox.replace`.
 
 ```python
 @ox.config
 class Database:
-    url: ox.Url
+    url: str
     pool_size: Annotated[int, ox.Ge(1), ox.Le(100)] = 10
     password: ox.Secret[str]                  # required after a default: ok
 
@@ -621,72 +629,104 @@ class AppConfig:
     debug: bool = False
     server: Server = Server()                 # optional section
     db: Database                              # required section
-    plugins: tuple[str, ...] = ox.field(default=(), merge="append")
+    plugins: tuple[str, ...] = ()
 ```
+
+(`ox.Url` is a later addition: today a URL is a `str`.)
 
 ### 6.2 Sources and priority
 
-The order of the list is the priority: the source at the bottom wins. You can repeat the same kind of source as many times as you like; each one is a layer.
+The order of the list is the priority: the source at the bottom wins. You can repeat the same kind of source as many times as you like; each one is a layer. `cfg.load(AppConfig)` with no `sources` reads the environment only, `sources=[cfg.env()]`.
 
 ```python
-from oxiform import config as cfg
+from oxiform import cfg
 
 settings = cfg.load(AppConfig, sources=[
+    cfg.pyproject("tool.app"),                           # the [tool.app] table of pyproject.toml
     cfg.file("config/base.toml"),
-    cfg.glob("config/conf.d/*.yaml"),                     # alphabetical order
     cfg.file("config.local.toml", optional=True),
     cfg.dotenv(".env", ".env.local", optional=True),
-    cfg.secrets_dir("/run/secrets", optional=True),     # Docker / Kubernetes
     cfg.env(),                                           # APP_DB__POOL_SIZE=20
+    cfg.mapping({"server": {"port": port}}, name="cli"),   # flags: the last word
 ])
 ```
 
-| Source | Names and coercion |
-| --- | --- |
-| `cfg.file(path)` | TOML, YAML or JSON by extension. Wire names, `strict` |
-| `cfg.glob(pattern)` | Several files, alphabetical order (by bytes, no locale). Like `file` |
-| `cfg.pyproject("tool.myapp")` | Section of `pyproject.toml`. Like `file` |
-| `cfg.dotenv(*paths)` | One or more `.env` files. Like `env`; does not change `os.environ` |
-| `cfg.env()` | Python name in uppercase with `env_prefix` and `env_nested` (`APP_DB__POOL_SIZE`), case-insensitive. `ox.field(env=...)` gives the exact name, without prefix. `lax` |
-| `cfg.secrets_dir(path)` | One file per value, named after the matching environment variable (`app_db__password`), case-insensitive; the trailing `\n` is removed. `lax` |
-| `cfg.mapping(dict)` | Overrides coming from code. Python names, `lax` |
+| Source | Names | Notes |
+| --- | --- | --- |
+| `cfg.file(path, *, optional=False, format=None)` | Wire names (and `aliases`), as in any document | TOML or JSON by extension (`.toml`, `.json`); `format="toml"` or `"json"` overrides it. Any other extension, YAML included, is a `config_source` problem that says what to use |
+| `cfg.pyproject(table, *, path="pyproject.toml", optional=True)` | Like `file` | `table` is a dotted path (`"tool.douro"`). With `optional=True` a missing file or a missing table is an empty layer; with `optional=False` it is a `config_source` problem |
+| `cfg.dotenv(*paths, optional=False, forbid_unknown=False)` | Like `env` | One layer per path, later paths win; does not change `os.environ` |
+| `cfg.env(*, environ=None, forbid_unknown=False)` | Python name in uppercase with `env_prefix` and `env_nested` (`APP_DB__POOL_SIZE`), case-insensitive; `ox.field(env=...)` gives the exact name | `environ` is the mapping to read (default `os.environ`), which is how tests avoid touching the process |
+| `cfg.mapping(data, *, name="mapping")` | Python names, nested mappings for sections | Overrides coming from code. `name` is how errors and origins call it (`"cli"`) |
 
-- **Composite values** (collections and whole sections) in env, `.env` and secrets dir are written in JSON: `APP_PLUGINS='["auth", "billing"]'`.
-- **Positions:** config files are read with a reader that keeps the line of each value, for the origin and for errors. They are small, so this reading is not part of the performance targets.
+- **Paths** are relative to the current directory at the time of `cfg.load` and may be `str` or `os.PathLike`. A source is read when `cfg.load` runs; creating it reads nothing.
+- **Names of environment variables.** For the field at the path `db.pool_size` the name is `env_prefix` + the Python names in uppercase joined by `env_nested`: `APP_DB__POOL_SIZE`. With `env_nested=None` only a field that is not inside a section can be named; a section is then set whole, with one JSON variable. Variables are matched without regard to case (`app_db__pool_size` works, as on Windows); two variables that differ only in case and hold different values are a `config_source` problem, because nothing says which one is meant.
+- **Values from text** (env and dotenv) are read in **lax mode** (section 4.5): `WORKERS=4` is `4`, `DEBUG=yes` is `True`, and an empty `APP_DB__PORT=` is `None` for `int | None`.
+- **Composite values** (a whole section, `tuple`, `frozenset`, and a union that has one of them) in env and dotenv are written in JSON: `APP_PLUGINS='["auth", "billing"]'`, `APP_SERVER='{"port": 9000}'`. The keys of a JSON section are wire names. A union that has both a composite and a scalar variant (`int | tuple[int, ...]`) reads text that starts with `[` or `{` as JSON and any other text as text. A variable that should be JSON and is not is a `config_source` problem that shows the position. A section given whole merges key by key with the rest (section 6.3), and a more specific name (`APP_SERVER__PORT`) wins over the whole section from the same layer.
+- **Unknown names.** A key of a file, a `pyproject` table or a mapping that no field reads is an `unknown_field` problem with the config's `unknown="forbid"` (D9), and it names the source and suggests the closest field. An environment variable is the opposite: the process holds many that are not the config's, so one that starts with `env_prefix` and names no field is ignored, unless `forbid_unknown=True` (on `cfg.env`, or on `cfg.dotenv`, whose files have no such noise) turns it into the same `unknown_field` problem.
+- **dotenv syntax.** One `KEY=value` per line (`export KEY=value` too); a blank line or a line that starts with `#` is skipped; spaces around the name and the `=` are ignored. An unquoted value ends at the end of the line or at ` #` and is trimmed. A single-quoted value is literal and a double-quoted one reads `\n`, `\r`, `\t`, `\"`, `\'` and `\\`, and may span lines. There is no `${VAR}` interpolation (it is a 1.x feature, and `$` is a literal now). A line that is not `KEY=value`, an unterminated quote, text after a closing quote and a repeated key are `config_source` problems with the file and line (a repeated key names both lines). The file is UTF-8, and a BOM is skipped.
+- **TOML and JSON** are read with a reader that finds the line of each value (TOML), for the origin and for errors. A TOML date or time is the ISO text oxiform reads in any format; JSON is read by `ox.json.decode` with the default limits, and a duplicate key is an error as everywhere (section 7). JSON files give the file in an origin and no line.
 - **Required fields:** the class defaults are always the lowest layer. Required fields are only checked after the merge, so no source has to be complete.
 
 ```mermaid
 flowchart LR
-    subgraph Camadas["Layers (bottom to top, the top one wins)"]
+    subgraph Layers["Layers (bottom to top, the top one wins)"]
         direction BT
-        D[Class defaults] --> B[base.toml] --> G["conf.d/*.yaml"] --> L[config.local.toml] --> E[".env, .env.local"] --> S["Secrets: /run/secrets"] --> V["Environment variables APP_*"]
+        D[Class defaults] --> P["pyproject [tool.app]"] --> B[base.toml] --> L[config.local.toml] --> E[".env, .env.local"] --> V["Environment APP_*"] --> M["cfg.mapping(flags)"]
     end
-    V --> M[Merge by priority] --> X["Validation in Rust, once"] --> R["Typed, immutable AppConfig<br/>(each value keeps its origin)"]
+    M --> X[Merge by priority] --> R["Validation in Rust, once, lax"] --> S["Typed, immutable AppConfig<br/>(each value keeps its origin)"]
 ```
 
 ### 6.3 Merge
 
-- The merge is done on the raw data, before validation. Each value keeps its source and is validated with the mode of that source: `strict` if it came from a file, `lax` if it came from env.
-- Sections merge key by key; scalars and collections are replaced.
-- Per field: `merge="replace"` (any type), `"append"` (`tuple`), `"union"` (`frozenset`) or `"deep"` (`Mapping`). A strategy that does not fit the type is a declaration error.
-- `"__unset__"` in an upper layer goes back to the class default.
+- The merge is done on the raw data, before validation: every source gives `(path, value)` pairs keyed by the Python names of the fields (a file key is first translated from its wire name or alias), and a later layer replaces an earlier value at the same path. Each value keeps its origin.
+- Sections merge key by key; scalars and collections are replaced. A section set to a value that is not a section by a later layer (`db = 5`) replaces the keys below it, and the validation then says it is the wrong type.
+- The merged tree is validated once, as one document, with the names of the model and **in lax mode**, whatever the source. This is the one place where the slice is looser than the design of D10: the design reads a file in strict mode and the environment in lax mode, and a `port = "8000"` in TOML is therefore accepted today. Reading each layer in its own mode needs the merge to happen inside the engine; it comes with the tree reader of `ox.convert`, and until then files keep the types they have (an integer stays an integer).
+- Per-field merge strategies (`merge="append"`, `"union"`, `"deep"`) and `"__unset__"` are not built yet (section 6.7); every field is replaced.
 
 ### 6.4 Origin of each value
 
 ```python
 cfg.origin(settings, "db.pool_size")
-# Origin(source="env", key="APP_DB__POOL_SIZE", line=None, overrides=["config/base.toml:12"])
+# Origin(kind="env", source="env", key="APP_DB__POOL_SIZE", line=None,
+#        overrides=("config/base.toml:12 (db.pool_size)",))
 ```
 
-Errors use the same information (`db.pool_size = 500 > maximum 100 (config/conf.d/prod.yaml:6)`), and `ox config explain app.settings:AppConfig` shows the table key · value · origin, with secrets hidden.
+`cfg.origin(settings, path)` takes the dotted **Python** names of a field, and `cfg.origins(settings)` gives `{path: Origin}` for every field, which is what a table of key, value and origin is made of. An `Origin` is a frozen value:
 
-### 6.5 Secrets and tests
+| Member | Meaning |
+| --- | --- |
+| `kind` | `"default"`, `"file"`, `"pyproject"`, `"dotenv"`, `"env"` or `"mapping"` |
+| `source` | What the layer is called: the path of a file as it was given, `"env"`, or the `name` of a mapping; `"default"` for a value no source set |
+| `key` | The key as the source writes it: the variable `APP_DB__POOL_SIZE`, the TOML key path `db.pool_size` (`tool.app.db.pool_size` in `pyproject.toml`), the dotted Python path in a mapping; `None` for a default |
+| `line` | The line of the value in a TOML or dotenv file, else `None` |
+| `overrides` | The origins this one replaced, nearest layer first, as text (`"config/base.toml:12 (db.pool_size)"`) |
 
-- `ox.Secret[T]` shows `********` in `repr`, logs, errors and `encode`; the real value only comes out with `.reveal()`. In JSON Schema it appears with `writeOnly: true`.
-- `cfg.dump(settings)` exports the final config, with secrets as `"********"`.
-- `cfg.override(settings, server__port=0)` returns a changed and validated copy, for tests.
+`str(origin)` is the text above: `env APP_DB__POOL_SIZE`, `config/base.toml:12 (db.pool_size)`, `.env:3 (APP_DB__URL)`, `mapping db.pool_size`, `default`. An origin never holds the value, so a `Secret` cannot leak through it. A whole section or collection set by one value has one origin for the field; the elements of a collection have none of their own. A section field is listed through its fields (`db.url`, `db.pool_size`), except an optional section that is still `None`, which is listed as one field. `cfg.origin` on an object that `cfg.load` did not make, on a path that names no field and on a section (it names its fields) is a `ValueError` that says what to pass. The origins are kept with the object for as long as it lives and are not carried by a copy, a pickle or `ox.replace`.
 
-In 1.x: profiles (`[prod]`), `${...}` interpolation, CLI flags generated from the model, hot reload and remote sources (Vault, AWS SSM). The API above already accommodates them as new sources and options.
+### 6.5 Errors
+
+`cfg.load` raises one of two things, and both are built with the machinery of section 4.7: the **source** is the first segment of every path and pointer, so `by_source()`, `unreadable_sources()` and `to_problem()` work as they do for a request.
+
+- **A source cannot be read** (the file is missing, malformed or not UTF-8, a variable holds invalid JSON, two variables differ only in case, a dotenv line is wrong): an `ox.DecodeError`, one `config_source` problem per failure with the source as its path (`/config/base.toml`), the position in `ctx` (`source` the kind, `file`, `line`, `column`, `key` for a variable) and a message that names the file and line, or the variable, and says what to do (`config file 'config/base.toml' not found; create it, fix the path, or pass optional=True if it may be absent`). Every unreadable source is reported, not only the first, and nothing is validated until all are readable.
+- **The values do not fit** (a type, a constraint, an unknown key, a missing field): an `ox.ValidationError` with the problems of one decode of the merged tree, each moved under the source that set the value (`/env/db/pool_size`, `/config/conf.d/prod.toml/server/port`) and with the origin in the message: `must be at most 100 (from env APP_DB__POOL_SIZE)`, `must be at most 100 (from config/base.toml:12, key db.pool_size)`. `ctx` keeps the engine's entries and adds `key` (the dotted Python path) and `origin` (`str(origin)`). A required field that no source set is under the source `"default"` and says where it could be set: `field required: set APP_DB__URL, or db.url in config/base.toml, ...` (one name per source that was given, at most four). An unknown key says `unknown key 'pool_sze' (did you mean 'pool_size'?)`. The `target` is the config class.
+- **Secrets** are never in a problem: no `input`, no value in a message, nothing in `ctx` (section 6.6).
+
+### 6.6 Secrets and tests
+
+`ox.Secret[T]` is a value that hides itself. It is part of oxiform and not only of config: any model may have one, and it works in every format.
+
+- **The class.** `ox.Secret(value)` holds `value`; `s.reveal()` returns it, and nothing else does. `repr(s)` is `Secret('********')`, `str(s)`, `format(s)` and `"%s" % s` are `********` (so a log line, an f-string and a traceback show the mask), `s == t` compares the revealed values (a `Secret` never equals a bare value), `hash(s)` is the hash of a tuple that holds the revealed value, `bool(s)` is whether the value is truthy (an empty secret is false, and nothing more about it is shown), and a `Secret` can be pickled, copied and compared like a value, because a config is handed to worker processes. The mask has one length, whatever the value, so it does not say how long the value is.
+- **Decoding.** `Secret[T]` reads `T`, with every constraint of `T` applied to the real value, and wraps the result: `Secret[Annotated[str, ox.Len(8)]]` and `Annotated[Secret[str], ox.Len(8)]` are the same. It follows the rules of `T` in lax mode, `Secret[int] | None` reads `""` as `None` as `int | None` does, and it works as a field, a list item or an optional. `Secret` with no argument, `Secret[Secret[T]]` and a `Secret` as one of several variants of a union (`Secret[str] | int`) are a `SchemaError`; write `Secret[str | int]`. A `Secret` cannot be a dict key.
+- **Errors.** A problem found while reading a secret keeps its code and its message but not the received value: `input` is left out (as `redact_inputs` does for everything). The length of a text that fails `Len` is still in its message, because the fix depends on it.
+- **Encoding writes the mask, always** (D25). `ox.json.encode` writes `"********"` for a `Secret` instance wherever it is, and, because a model may be built by hand with a plain value in a field declared `Secret[str]`, for the value of any field (or list item, or dict value) declared as a `Secret`, whatever its class; `encode(obj, type=Secret[str])` does too. `None` in an `Optional[Secret[T]]` is `null`. There is no switch that reveals: to write a secret out, take `s.reveal()` and encode that. (`ox.Policy(secrets="reveal")` of section 5.5 comes with `ox.Policy`; until then the explicit `reveal()` is the only way.)
+- **JSON Schema** (section 8.5). Reading, a `Secret[T]` is the schema of `T` marked `"writeOnly": true`, plus `"format": "password"` for a plain string, and a `default` that is a `Secret` is not published. Writing (the `serialization` variant), it is what encode writes: `{"type": "string", "const": "********"}`.
+- `cfg.dump(settings)` is the final config as plain data with wire names (JSON types, as `ox.json.encode` writes them), secrets as `"********"`.
+- Tests: `cfg.mapping(...)` and `cfg.env(environ={...})` are the test seams, and `ox.replace(settings, ...)` copies a config with changes. `cfg.override(settings, server__port=0)` (a validated copy that keeps the origins) is not built yet.
+
+### 6.7 What is not built yet
+
+`cfg.glob`, `cfg.secrets_dir`, YAML files, reading each layer in its own mode (section 6.3), `merge=` and `"__unset__"`, `Mapping` fields, `cfg.override`, `ox.Url` and `ox.Email`, line numbers in JSON files, the `ox config explain` command, profiles, interpolation, CLI flags generated from the model, hot reload and remote sources. All are additions to the API above.
 
 ## 7. Security and limits
 
@@ -721,7 +761,7 @@ Other guarantees:
 - **Internal hash tables** (for example, in duplicate key detection) use a random seed, against collision attacks. Field lookup uses a perfect hash, immune by construction.
 - **Sensitive data in errors:**
   - With `redact_inputs`, errors omit the received value. It is on by default when `OXIFORM_ENV=production` (read at import) and can be changed with `ox.set_defaults(redact_inputs=...)`.
-  - `ox.Secret` never appears in errors, logs or `repr`.
+  - `ox.Secret` never appears in errors, logs or `repr` (section 6.6): a problem found while reading one has no `input`.
 - **`unsafe` code** only in isolated modules (the bridge to the CPython C-API and the readers), with continuous fuzzing and mandatory review by a second maintainer.
 - **Distribution chain:** releases through PyPI Trusted Publishing, with attestations and SBOM.
 
@@ -911,7 +951,9 @@ bundle.schemas[2]           # {"type": "array", "items": {"$ref": "#/components/
 
 **Errors.** A type oxiform cannot read, a misplaced constraint, an ambiguous union and a model that refers to a class not defined yet are `ox.SchemaError`, exactly as in `decode` (the types are compiled first). A bad argument is a `TypeError` or a `ValueError` that says what to pass: `targets` that is not a list or a tuple (`ox.json_schema_bundle(User)` says to call `ox.json_schema(User)` or pass `[User]`, and a `set` or a `dict` is refused because its order is not the order of the schemas), a `mode` or `coercion` outside the values above, `coercion="lax"` with `mode="serialization"`, a bad `ref_template`.
 
-**Not yet.** `@ox.computed` fields (section 3.4), `ox.Secret`, `ox.Raw`, `doc`, `examples` and `deprecated` on fields (section 5.2), `ox.Policy` (a schema describes the default policy), `__oxiform_schema__` and the `ox schema` command join this section when they join the library. A `default` that cannot be written as JSON is left out.
+**`ox.Secret[T]`** (section 6.6). In a *validation* schema it is the schema of `T` with `"writeOnly": true` (and `"format": "password"` when `T` is a plain string, that is `{"type": "string"}` with nothing else that sets a format), so a UI knows to mask it and a generator knows it is never sent back; the `default` of a field is left out when it is a `Secret`. In the *serialization* variant it is what encode writes, `{"type": "string", "const": "********"}`, for any `T`, and it is a required property like any field that is always written. A lax variant allows the text of `T` as for any other type, and a `Secret[T] | None` allows the empty string like `T | None` does.
+
+**Not yet.** `@ox.computed` fields (section 3.4), `ox.Raw`, `doc`, `examples` and `deprecated` on fields (section 5.2), `ox.Policy` (a schema describes the default policy), `__oxiform_schema__` and the `ox schema` command join this section when they join the library. A `default` that cannot be written as JSON is left out.
 
 ## 9. Architecture and performance
 
@@ -1114,7 +1156,7 @@ This is the complete 1.0 surface. Any symbol outside this list is internal.
           skip_if_default=False, skip_if_none=False, coerce=None,
           validate_init=False, validate_assignment=False, strict_rules=False)
 class ox.Model                     # same options as class arguments
-@ox.config(*, env_prefix="", env_nested="__", **opcoes_de_model)  # kw_only=True, frozen=True, unknown="forbid"
+@ox.config(*, env_prefix="", env_nested="__", rename_all=None, unknown="forbid")  # kw_only=True, frozen=True; slots, weakref
 ox.field(*, default=MISSING, default_factory=MISSING, rename=None, aliases=(),
          skip=False, skip_encode=False, skip_decode=False, skip_if=None,
          skip_if_default=False, skip_if_none=False, flatten=False, codec=None,
@@ -1155,7 +1197,7 @@ ox.pairs.decode(pairs, type, *, case_insensitive=False, limits=None, max_errors=
 ox.DecodeResult                    # .values, .errors
 
 # --- types and constraints ---
-ox.Secret[T], ox.Raw, ox.NaiveDateTime, ox.Email, ox.Url, ox.HttpUrl
+ox.Secret[T] (.reveal()), ox.Raw, ox.NaiveDateTime, ox.Email, ox.Url, ox.HttpUrl
 ox.Tagged(field, *, content=None), ox.External(), ox.Untagged()
 ox.Ge, Gt, Le, Lt, MultipleOf, Digits, Finite, Len, Pattern, StartsWith, EndsWith,
    Contains, Ascii, NonBlank, Strip, Lower, Upper, NormalizeUnicode, Truncate,
@@ -1180,12 +1222,14 @@ ox.SchemaTarget(type, mode=None, coercion=None); ox.SchemaBundle    # .defs, .sc
 ox.JsonSchema = dict[str, Any]; ox.SchemaMode; ox.SchemaCoercion   # the types of the arguments and of bundle.defs
 ox.explain(type) -> ox.Explanation; ox.warmup(*types)
 
-# --- config: from oxiform import config as cfg ---
-cfg.load(type, *, sources) -> T
-cfg.file(path, *, optional=False), cfg.glob(pattern), cfg.pyproject(table, *, path="pyproject.toml"),
-cfg.dotenv(*paths, optional=False), cfg.env(), cfg.secrets_dir(path, *, optional=False), cfg.mapping(data)
-cfg.origin(obj, key) -> cfg.Origin  # .source, .key, .line, .overrides
-cfg.dump(obj) -> dict; cfg.override(obj, **changes) -> T
+# --- config: from oxiform import cfg (section 6) ---
+cfg.load(type, sources=None, *, max_errors=100, limits=None) -> T      # sources=None is [cfg.env()]
+cfg.file(path, *, optional=False, format=None), cfg.pyproject(table, *, path="pyproject.toml", optional=True),
+cfg.dotenv(*paths, optional=False, forbid_unknown=False), cfg.env(*, environ=None, forbid_unknown=False),
+cfg.mapping(data, *, name="mapping"); cfg.Source                       # what a sources list holds
+cfg.origin(obj, path) -> cfg.Origin  # .kind, .source, .key, .line, .overrides; str(origin)
+cfg.origins(obj) -> dict[str, cfg.Origin]; cfg.dump(obj) -> dict
+# not built yet: cfg.glob, cfg.secrets_dir, cfg.override (section 6.7)
 
 # --- tests and integrations ---
 oxiform.testing.assert_valid(obj); oxiform.testing.assert_round_trip(obj, *, formats=None)
@@ -1220,7 +1264,7 @@ Codes are public API (section 10.2); messages are not.
 | `rule` | Failure of an `@ox.verify` rule | `rule` (name or expression) |
 | `invalid` | `ox.Invalid`, `ValueError` or `TypeError` without its own code | user-defined |
 | `limit_exceeded` | A limit of `ox.Limits` was exceeded | `limit`, `value` |
-| `config_source` | Required config source missing or unreadable | `source` |
+| `config_source` | A config source is missing, malformed or unreadable (section 6.5) | `source` (the kind), `file`, `line`, `column`, `key` where they apply |
 
 ## 12. Roadmap
 
@@ -1300,6 +1344,7 @@ The gate (≤ 1.1×) is not met. Following this section's rule, the value propos
 - [x] Error path prefixes and combined reports for a host that decodes several sources of one request (OX-4, section 4.7): `with_source`, `combine`, `to_problem(status=, type=, instance=)`, and `Report::combine` in the engine, and through the embedding ABI as `report_in_source` and `report_combine` (section 9.5)
 - [x] Pair sources (OX-3, section 5.6): `ox.urlencoded.decode` and `ox.pairs.decode`, lax mode with percent-decoding, repeated names as sequences, case-insensitive header names and per-call `unknown=`, and `decode_pairs` through the embedding ABI as a minor addition (ABI 1.1; a host built for 1.0 keeps working)
 - [x] JSON Schema bundle (OX-5, section 8.5): `ox.json_schema` and `ox.json_schema_bundle` write JSON Schema 2020-12 for every type of section 3.5 that oxiform reads today, with shared definitions, a `ref_template`, names that never collide and validation, lax validation and serialization variants; `examples/openapi_components.py`
+- [x] Config slice (section 6, porto-309.14, D24 and D25): `@ox.config` with `env_prefix` and `env_nested`, layered sources (`cfg.file` TOML and JSON, `cfg.pyproject`, `cfg.dotenv`, `cfg.env`, `cfg.mapping`) decoded in lax mode, `cfg.origin` and `cfg.origins`, `cfg.dump`, errors that name the source and key as combined reports, and `ox.Secret[T]` (masked in `repr`, errors, encode and the schema, `.reveal()` as the only way out); `examples/server_config.py`
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
 - [x] Create the repository with the structure from section 12.2
 - [x] Phase 0 prototype (section 12.2)
