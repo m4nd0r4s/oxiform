@@ -28,6 +28,23 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The sample host of the embedding ABI must not link the engine: it depends on oxiform-abi alone.
+      - name: the abi host links no engine crate
+        shell: bash
+        run: "! cargo tree -p oxiform-abi-host --prefix none | grep -E '^oxiform-(core|formats|py|abi-export) '"
+
+  # The pure Rust half of the embedding ABI (reports as C views, options, buffers) walks raw
+  # pointers; Miri checks it without an interpreter.
+  miri:
+    name: miri (embedding abi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri test -p oxiform-abi -p oxiform-abi-export
 
   python:
     name: python ${{ matrix.python }} (${{ matrix.os }})
@@ -47,7 +64,14 @@ jobs:
       - run: python -m venv .venv
       - run: .venv/bin/python -m pip install maturin pytest pyright ruff
       - run: .venv/bin/maturin develop --release
+      # The sample host of the embedding ABI, built as any extension that uses oxiform would be.
+      - run: .venv/bin/maturin develop --release -m examples/abi-host/Cargo.toml
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
       - run: .venv/bin/python -m pytest -q
+        env:
+          # A missing host build fails the run instead of skipping tests/test_abi_host.py.
+          OXIFORM_REQUIRE_ABI_HOST: "1"
       - run: .venv/bin/ruff check python tests bench
       - run: .venv/bin/ruff format --check python tests bench
       - run: .venv/bin/pyright --pythonpath .venv/bin/python
