@@ -853,6 +853,71 @@ Measured on a public, reproducible benchmark, against the latest versions of eac
 | Import + compilation of 100 models | < 50 ms |
 | Memory per `ox.Model` instance | ≤ dataclass with slots |
 
+### 9.5 Embedding C ABI (OX-1)
+
+A native Python extension in another cdylib (Douro's `douro._native`) validates and serializes with oxiform without linking its engine. This is the single-owner rule of porto's ADR-019: the plan cache and every compiled type of the process live in `oxiform._oxiform`, once, and a host reaches them through a table of functions exported as a `PyCapsule`. Two crates are involved, and neither pulls the engine into the host:
+
+| Crate | Holds | Used by |
+| --- | --- | --- |
+| `oxiform-abi` | The `#[repr(C)]` types, the table, the version check (`check_header`, `table_from_pointer`), a safe Rust layer (`Api`, `Plan`, `Report`, borrowing views of issues, `VecBuffer`) and, with the `pyo3` feature, `import()`. No dependencies but optional PyO3 | The host |
+| `oxiform-abi-export` | What the exporter does without Python: reports as C views, the options structs as engine options, the append to the host buffer. Pure Rust, so it runs under Miri | `oxiform-py` |
+
+`oxiform-py` adds the functions that need the interpreter (plans, decode, encode) and the capsule. `examples/abi-host` is a sample PyO3 cdylib that depends on `oxiform-abi` alone, decodes and encodes through the capsule and builds its own RFC 9457 problem; `tests/test_abi_host.py` drives it, and CI builds it and checks that it links no engine crate.
+
+**Discovery.** `oxiform._oxiform._ABI_V1` is a capsule named `oxiform._oxiform._ABI_V1` that holds a pointer to a static table, valid for the life of the process; `ABI_VERSION` is `(major, minor)`, and `_ABI_MAJORS` lists every major that has a capsule (`_ABI_V<major>`). A Rust host calls `oxiform_abi::import(py)` when its module is imported.
+
+**The table** (`OxiformApi`, in the order of its fields; the first four are `abi_major`, `abi_minor`, `struct_size`, `reserved`, then `oxiform_version`):
+
+| Function | What it does |
+| --- | --- |
+| `plan_for(type, &plan)` | The plan of any type expression. It is `compiled_for`, the function behind `ox.json.decode`: there is **no second plan cache**, and a host that asks for a type Python already compiled compiles nothing |
+| `plan_retain`, `plan_release`, `plan_target` | A plan is a reference counted handle; the compiled type stays in the cache anyway |
+| `decode(plan, format, data, len, options, &value, &report)` | Reads one document as the type of `plan`. `OX_OK` gives a new reference to the object, `OX_INVALID` a report |
+| `encode(format, obj, plan, options, buffer)` | Appends the document to a host buffer. With a `plan`, `obj` is written as the declared type (OX-2: the fields of the type and nothing else); with none, as the class of the value |
+| `report_view`, `report_in_source`, `report_combine`, `report_free` | The issues as C views; the source prefix and the combination of several reports (OX-4); the host builds its own problem |
+| `limits_default`, `limits_none`, `status_message` | The limits of oxiform, to start from; a sentence for each status that says what to do |
+
+Only `OX_FORMAT_JSON` exists in 1.0; another format is `OX_UNSUPPORTED`, and a later minor adds one.
+
+**Options.** `OxDecodeOptions` is size-prefixed: `struct_size`, `mode` (`OX_MODE_STRICT`, `OX_MODE_LAX`), `max_errors` (0 is 100, 1 is "stop at the first"), a pointer to `OxLimits` (null is the defaults), `unknown` (`OX_UNKNOWN_MODEL`, `_IGNORE`, `_FORBID`: the per-call override of the `unknown=` option of every model, OX-9), `flags` (none are defined yet: a bit that is set is refused) and `context` (the validation context of OX-11: a borrowed `PyObject*`, reserved, and refused unless null so that it is never silently ignored). `OxEncodeOptions` has `flags` (`OX_ENCODE_SORT_KEYS`, `OX_ENCODE_INDENT`) and `indent`. Every struct a host fills is size-prefixed, which means:
+
+- the host sets `struct_size` to the `size_of` of the struct it was built against and starts from the `new()` constructor;
+- oxiform copies only `struct_size` bytes over the defaults of its own, so a host built for an earlier minor leaves the new fields at their defaults, and a host built for a later minor than the installed oxiform has its extra bytes ignored (it is refused at import before that, see below);
+- a `struct_size` below the size of ABI 1.0 is `OX_INVALID_ARGUMENT`, with a message that says what to set;
+- fields are added only at the end, as integers, pointers and function pointers (no `bool`, no Rust enum), so an unknown value from a peer is detected and not undefined behavior. Arrays oxiform returns carry the stride of their elements (`OxReportView::issue_size`); the leaf element structs are frozen within a major.
+
+**Issues.** `report_view` gives the report kind (`validation` or `decode`), `truncated`, and for each issue `code`, `message`, `pointer` (RFC 6901, escaped), `input` when there is one, the `path` as segments (a key or an index) and the `ctx` as entries whose values are a bool, an integer, a float, a string, a list of integers, strings or `Literal` values (of mixed types), or the issues of the variants of a union that was tried, by variant name. These are the values `ox.ValidationError.errors()` has, including the `format` of a `syntax` issue (tests compare them one to one). A host reads them without an interpreter and builds its problem (the sample host maps a report to 400, 413 or 422 with the issues under `errors`).
+
+**Sources and combination (OX-4).** `report_in_source(report, "query")` makes the source the first segment of every path and pointer (`Report::in_source`); `report_combine(parts, count, max_errors, &out)` takes `[(source, report)]` in order of priority and returns one report with `Report::combine` semantics: the budget of the whole report (the first issues are kept), `truncated` when one was dropped or a part already was, a decode report only when every part is one. A successful `report_combine` consumes every part; on any error nothing is consumed.
+
+**Versioning policy.**
+
+- The table starts with `abi_major`, `abi_minor` and `struct_size`, so a host reads the version before it knows how long the table is.
+- A **major** bump is any incompatible change: a field removed, moved or reinterpreted, a function that behaves differently. oxiform then exports a new capsule (`_ABI_V2`) and keeps the previous one for at least two minor releases. A host built for major N looks for `_ABI_V<N>` in `_ABI_MAJORS` and refuses another major at import with an `ImportError` that says which majors are installed and what to do (install an oxiform release that exports N, or rebuild the host against the installed release).
+- A **minor** bump is additive: a function at the end of the table, a field at the end of a size-prefixed struct, a constant. A host built for minor M needs an oxiform that exports at least M, and checks `abi_minor >= M` and `struct_size >= size_of::<OxiformApi>()` at import (`ImportError`: "needs oxiform ABI 1.2 or newer ... upgrade oxiform"); a newer oxiform serves an older host unchanged, because the host reads only the prefix it knows.
+- **OX-3 (pair-source decoding)** is a minor addition by design: a `decode_pairs` function at the end of the table, with its own size-prefixed options, and `OX_FORMAT_*` values for sources that are not documents. OX-11 fills `context` and adds the functions that build it; OX-6 and OX-8 add fields and functions in the same way.
+- The package version of oxiform and the ABI version are independent; the ABI version is in the changelog of each release.
+
+**Ownership and lifetimes.** Every pointer has one owner at any time:
+
+| Thing | Allocated by | Freed by | Valid for |
+| --- | --- | --- | --- |
+| Input `data`, `source` strings, options, limits | The host | The host | The call. oxiform never keeps a pointer to them, and the result never refers to `data` |
+| The decoded object (`out_value`) | oxiform | The host, who holds one reference and decrements it with the thread attached | Until released |
+| An `OxPlan` | oxiform | The host: `plan_release` once per reference (`plan_retain` adds one) | Until the last reference is released |
+| An `OxReport` and its views | oxiform | The host: `report_free`, or a successful `report_combine` | Until freed; `report_in_source` invalidates the views |
+| Output bytes | The host (`OxBuffer`) | The host | oxiform appends at `data + len` and never frees, reallocates or keeps `data`. To grow it calls the host's `reserve` callback, so memory is always allocated and freed by one allocator, never across two cdylibs |
+| `PyObject*` arguments (`target`, `obj`, `context`) | The host | The host | Borrowed for the call |
+| Static strings (`status_message`, `oxiform_version`, issue codes) | oxiform | Nobody | Forever |
+
+The output buffer is appended to in one step, after the document is built, so a failed call (`EncodeError`, a failing `reserve`) leaves `len` as it was. A `reserve` callback must leave `len` as it was, set `capacity` to at least the size asked for and `data` to a block of that capacity; a buffer without `reserve` is fixed, and what does not fit is `OX_BUFFER` with the size needed in the message. A host written in Rust uses `VecBuffer`.
+
+**Errors.** Every call returns a status: `OX_OK`; `OX_INVALID` (a decode: read the report); `OX_PYTHON_ERROR` (a Python exception is set in the thread: `SchemaError` from `plan_for`, `EncodeError`, whatever a validator raised); `OX_INVALID_ARGUMENT` (a null pointer, a value out of range, a `struct_size` that is too small, an empty source); `OX_UNSUPPORTED` (a format, flag or context of a later minor); `OX_BUFFER`; `OX_INTERNAL` (a bug: panics are caught at the boundary and never unwind into the host). The calls that run with the interpreter also set a Python exception for the argument, unsupported and buffer errors (`ValueError`, `NotImplementedError`, `BufferError`) that says what to do; those that do not (reports, limits) return only the status, and `status_message` says what it means.
+
+**Threads and free-threading.** The functions marked *attached* in the table (`plan_for`, `decode`, `encode`) need the calling thread to be attached to the interpreter (the GIL held, or a thread state in a free-threaded build such as 3.14t), which is the normal state in an extension function; they run Python code while they work (validators, default factories), so a host buffer must not change during the call, and the exception they raise is left in the thread, so the thread must stay attached until the host fetches it. Plans are immutable and shared without locks: on a free-threaded build several threads decode through one plan at once, each attached. Reports, `plan_retain` and `report_*` need no interpreter; `plan_release` attaches itself when it frees the last reference.
+
+**Tests.** The pure Rust half (`oxiform-abi`, `oxiform-abi-export`: views, options of every size, buffers that fail or break the contract, combine with bad arguments) runs under Miri in CI. `tests/test_abi_host.py` drives the sample host on 3.13 and 3.14t: version refusal (another major, a newer minor), no duplicate plan cache (compilation counters), every option and limit with parity against the Python API, options of a later minor, issues round trip against `errors()`, sources and combination against `ValidationError.combine`, buffer ownership (grow, fixed, refuse, lie, failed encode leaves the buffer as it was), error paths, reference counts, and eight threads through one plan.
+
 ## 10. Compatibility, stability, tests and conformance
 
 From 1.0 on, oxiform follows strict semver, and the promise of "all formats" is verified by official suites and differential tests on every PR.
@@ -873,6 +938,7 @@ From 1.0 on, oxiform follows strict semver, and the promise of "all formats" is 
 - The error codes (section 11.2) and the shape of each error (section 4.7).
 - The output format of each format: for the same inputs and options, the same model produces the same bytes.
 - Names of `ox.field` attributes and `@ox.model` options.
+- The embedding C ABI (section 9.5): the capsule name, the table and the structs of a major version. It has its own version, and follows the policy in section 9.5, not the one of the Python API.
 - **Not** public API: the text of error messages, the format of `ox.explain`, the internal plan and the concrete types returned where the spec only promises a protocol (for example, the read-only mapping of configs).
 
 ### 10.3 Changes
@@ -890,7 +956,7 @@ From 1.0 on, oxiform follows strict semver, and the promise of "all formats" is 
 | Differential | Same input against msgspec, pydantic, ruamel.yaml (YAML 1.2 mode) and tomllib: same result or a documented difference | Every PR |
 | Compiled rules | Each compiled rule also runs in Python, and the results must be equal | Every PR |
 | Fuzzing | Readers and Python bridge with cargo-fuzz and Atheris | Continuous (OSS-Fuzz) |
-| Memory | Pure Rust code (readers, executor, tape) under Miri. Bridge under AddressSanitizer with a debug CPython. Reference leak tests | Daily |
+| Memory | Pure Rust code (readers, executor, tape, and the pure half of the embedding ABI) under Miri. Bridge under AddressSanitizer with a debug CPython. Reference leak tests | Daily |
 | Free-threading | Concurrency tests on 3.13t/3.14t, with ThreadSanitizer | Every PR |
 | Benchmarks | Targets from section 9.4, with public history | Every merge to `main` |
 
@@ -1047,7 +1113,10 @@ oxiform/
 ├── crates/
 │   ├── oxiform-core/       # plan (IR), compiler, executor, constraints, rules, tape. No Python
 │   ├── oxiform-formats/    # readers and writers, event interface (D22)
+│   ├── oxiform-abi/        # embedding C ABI: types, version check, safe host layer (section 9.5)
+│   ├── oxiform-abi-export/ # the exporting half of the ABI without Python: report views, options, buffer
 │   └── oxiform-py/         # PyO3 bridge: object creation, Python calls, _oxiform module
+├── examples/abi-host/      # sample PyO3 host of the embedding ABI, tested from tests/
 ├── python/oxiform/         # public API, type introspection, stubs, py.typed
 ├── tests/                  # pytest + Hypothesis
 └── bench/                  # public, reproducible benchmarks
@@ -1081,8 +1150,8 @@ The gate (≤ 1.1×) is not met. Following this section's rule, the value propos
 
 ### 12.4 Next steps
 
-- [ ] Before the embedding ABI (the `decode(plan, bytes, mode, limits, context)` entry points of a host such as Douro) is frozen: make its options struct size-prefixed (`size` first, fields appended only, a consumer checks `size` before reading a field it was built after), keep `max_errors` in that struct next to `mode` and not in the limits (as in `Options`), and fold the per-call `unknown=` override into it, so that neither needs a new ABI major
-- [x] Error path prefixes and combined reports for a host that decodes several sources of one request (OX-4, section 4.7): `with_source`, `combine`, `to_problem(status=, type=, instance=)`, and `Report::combine` in the engine; exposing them through the embedding ABI waits for it
+- [x] The embedding ABI (OX-1, section 9.5): a versioned capsule `_ABI_V1` (1.0) with plan handles, decode from a host buffer, encode into a host buffer (also against a declared type), structured issues with source prefixes and combination, and per-call `unknown=` (OX-9). Options are size-prefixed with `max_errors` next to `mode`, so OX-3 (pair sources) and OX-11 (context) are minor additions
+- [x] Error path prefixes and combined reports for a host that decodes several sources of one request (OX-4, section 4.7): `with_source`, `combine`, `to_problem(status=, type=, instance=)`, and `Report::combine` in the engine, and through the embedding ABI as `report_in_source` and `report_combine` (section 9.5)
 - [ ] Reserve `oxiform` on PyPI and crates.io, and create the GitHub organization
 - [x] Create the repository with the structure from section 12.2
 - [x] Phase 0 prototype (section 12.2)
