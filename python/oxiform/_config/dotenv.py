@@ -52,9 +52,13 @@ def parse_dotenv(text: str) -> tuple[dict[str, DotenvValue], list[DotenvProblem]
         line = line_of(position)
         match = _KEY.match(text, position)
         if match is None:
-            shown = stripped if len(stripped) <= 40 else stripped[:40] + "..."
+            # The text of the line is never shown: it may be part of a key or a secret.
             problems.append(
-                DotenvProblem(line, f"expected KEY=value, found {shown!r}; write NAME=value")
+                DotenvProblem(
+                    line,
+                    "this line is not KEY=value; write NAME=value, and quote a value that "
+                    "spans lines",
+                )
             )
             position = end_of_line + 1
             continue
@@ -122,8 +126,7 @@ def _quoted(text: str, start: int, line: int) -> tuple[str, int, DotenvProblem |
     if rest and not rest.startswith("#"):
         problem = DotenvProblem(
             line,
-            f"text after the closing {quote} quote ({rest[:20]!r}); "
-            "end the line there, or quote the whole value",
+            f"text follows the closing {quote} quote; end the line there, or quote the whole value",
         )
         return "", end_of_line + 1, problem
     return "".join(out), end_of_line + 1, None

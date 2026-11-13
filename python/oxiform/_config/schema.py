@@ -5,6 +5,7 @@ import collections.abc
 import dataclasses
 import functools
 import typing
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal, cast
 
@@ -71,6 +72,10 @@ class FieldSchema:
     """How env and dotenv text is read: as the text it is, as JSON, or as JSON when it starts
     with ``[`` or ``{`` and as text otherwise."""
     has_default: bool
+    default_section: Callable[[], object] | None = dataclasses.field(
+        default=None, compare=False, repr=False
+    )
+    """Makes the default of a section field, to seed what a source leaves out of it."""
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -121,9 +126,23 @@ def section_schema(cls: type) -> SectionSchema:
                 optional_section=shape.section is not None and shape.optional,
                 text=_text_kind(shape),
                 has_default=default_of(field) is not None,
+                default_section=_section_default(field, shape.section),
             )
         )
     return SectionSchema(cls, fields)
+
+
+def _section_default(
+    field: dataclasses.Field[object], section: type | None
+) -> Callable[[], object] | None:
+    if section is None:
+        return None
+    if field.default is not dataclasses.MISSING:
+        value = field.default
+        return lambda: value
+    if field.default_factory is not dataclasses.MISSING:
+        return field.default_factory
+    return None
 
 
 @dataclass(frozen=True, slots=True)

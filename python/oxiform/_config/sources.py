@@ -6,6 +6,7 @@ reading it. It never merges and never validates: ``cfg.load`` does that once for
 
 import difflib
 import os
+import re
 import tomllib
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -41,6 +42,12 @@ __all__ = [
 ]
 
 _NESTING_LIMIT = 16
+
+_RESERVED_NAMES = {
+    "env": "the environment",
+    "default": "the value of a field that no source set",
+}
+"""Labels that already mean something in an error or an origin."""
 
 
 @dataclass(slots=True)
@@ -268,7 +275,7 @@ def _parse_toml(
         line = position[0] if position else None
         column = position[1] if position else None
         at = f", line {line}, column {column}" if position else ""
-        reason = detail.split(" (at ")[0]
+        reason = _redacted(detail.split(" (at ")[0])
         return (
             None,
             None,
@@ -282,6 +289,11 @@ def _parse_toml(
             ),
         )
     return data, key_lines(text), None
+
+
+def _redacted(reason: str) -> str:
+    """A reader's reason without anything it quotes from the input."""
+    return re.sub(r"'[^']*'|\"[^\"]*\"", "'...'", reason)
 
 
 def _toml_position(detail: str) -> tuple[int, int] | None:
@@ -321,11 +333,16 @@ def _parse_json(
 
 
 def _json_reason(problem: ErrorDetails) -> str:
-    """What the reader said, with the key named for a duplicate (which has no position)."""
+    """Where the reader stopped, never what it found there: that may be a secret. A duplicate
+    names the key (not its value)."""
     if problem["code"] == "duplicate_key":
         key = problem["path"][-1] if problem["path"] else ""
         return f"the key {key!r} appears twice, so keep one"
-    return problem["message"]
+    ctx = problem["ctx"]
+    line, column = ctx.get("line"), ctx.get("column")
+    if line is not None and column is not None:
+        return f"syntax error at line {line}, column {column} (the text is not shown)"
+    return "syntax error (the text is not shown)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,10 +455,14 @@ class _Pyproject(Source):
         return f"{key} in {os.fspath(self.path)}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class _Mapping(Source):
     data: Mapping[str, object]
     name: str
+
+    def __repr__(self) -> str:
+        # The values are not shown: a mapping may hold credentials.
+        return f"cfg.mapping(<{len(self.data)} keys>, name={self.name!r})"
 
     def read(self, context: ReadContext) -> Reading:
         reading = Reading()
@@ -535,6 +556,22 @@ def _take(
         )
         return
     name, text, line = hits[0]
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # Neither the value nor the offending character is shown, only which variable it is.
+        where = f"{label}:{line}: " if line is not None else ""
+        reading.problems.append(
+            _problem(
+                label,
+                kind,
+                f"{where}the value of {name} is not valid text (it holds bytes that are not "
+                "UTF-8); set the variable again with text",
+                key=name,
+                line=line,
+            )
+        )
+        return
     parsed: object = text
     if field_.text == "json" or (field_.text == "either" and text.lstrip().startswith(("[", "{"))):
         try:
@@ -610,10 +647,15 @@ def _report_unknown(
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class _Env(Source):
     environ: Mapping[str, str] | None
     forbid_unknown: bool
+
+    def __repr__(self) -> str:
+        # The variables are not shown: they may hold credentials.
+        shown = "os.environ" if self.environ is None else f"<{len(self.environ)} variables>"
+        return f"cfg.env(environ={shown}, forbid_unknown={self.forbid_unknown})"
 
     def read(self, context: ReadContext) -> Reading:
         _check_prefix(self.forbid_unknown, context)
@@ -783,4 +825,9 @@ def mapping(data: Mapping[str, object], *, name: str = "mapping") -> Source:
         )
     if not isinstance(name, str) or not name:  # pyright: ignore[reportUnnecessaryIsInstance]
         raise ValueError(f"name is the text errors call this source, such as 'cli', not {name!r}")
+    if name in _RESERVED_NAMES:
+        raise ValueError(
+            f"name {name!r} is how errors and origins call {_RESERVED_NAMES[name]}; "
+            "choose another, such as 'cli' or 'overrides'"
+        )
     return _Mapping(dict(data), name)

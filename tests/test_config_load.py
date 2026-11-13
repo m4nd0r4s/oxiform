@@ -7,7 +7,7 @@ import json
 import pickle
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import pytest
 
@@ -681,3 +681,156 @@ def test_dump_is_plain_data_with_wire_names() -> None:
         "plugins": ["a"],
         "cache": None,
     }
+
+
+# -- defaults of sections, naming, frames, union messages -------------------------------------
+
+
+@ox.config
+class Db:
+    url: str = "class-default"
+    pool_size: int = 10
+    password: ox.Secret[str] = ox.Secret("default-password")
+    replicas: tuple[str, ...] = ("a",)
+
+
+@ox.config
+class WithCustomDefault:
+    db: Db = Db(url="custom", replicas=("x", "y"))
+    inner: Db | None = None
+
+
+def test_a_section_default_that_is_not_the_class_default_fills_the_keys_a_source_leaves_out() -> (
+    None
+):
+    settings = cfg.load(WithCustomDefault, [cfg.env(environ={"DB__POOL_SIZE": "3"})])
+    assert settings.db.pool_size == 3
+    assert settings.db.url == "custom"
+    assert settings.db.replicas == ("x", "y")
+    assert settings.db.password.reveal() == "default-password"
+    assert cfg.origin(settings, "db.pool_size").kind == "env"
+    for key in ("db.url", "db.replicas", "db.password"):
+        assert cfg.origin(settings, key) == cfg.Origin("default", "default")
+    untouched = cfg.load(WithCustomDefault, [cfg.env(environ={})])
+    assert untouched.db == Db(url="custom", replicas=("x", "y"))
+    whole = cfg.load(WithCustomDefault, [cfg.mapping({"db": {"url": "given"}})])
+    assert (whole.db.url, whole.db.replicas) == ("given", ("x", "y"))
+
+
+def test_an_empty_table_in_a_file_takes_the_section_default(tmp_path: Path) -> None:
+    file = write(tmp_path / "a.toml", "[db]\n")
+    assert cfg.load(WithCustomDefault, [cfg.file(file)]).db.url == "custom"
+
+
+def test_a_default_with_a_section_inside_seeds_it_too() -> None:
+    @ox.config
+    class Outer:
+        pair: WithCustomDefault = WithCustomDefault(db=Db(url="deep", pool_size=7))
+
+    settings = cfg.load(Outer, [cfg.mapping({"pair": {"db": {"url": "given"}}})])
+    assert settings.pair.db.url == "given"
+    assert settings.pair.db.pool_size == 7
+
+
+def test_a_section_default_factory_is_used_the_same_way() -> None:
+    @ox.config
+    class Made:
+        db: Db = ox.field(default_factory=lambda: Db(url="made"))
+
+    assert cfg.load(Made, [cfg.mapping({"db": {"pool_size": 2}})]).db.url == "made"
+
+
+@ox.config
+class Camel:
+    pool_size: int = 1
+
+
+@ox.config(rename_all="camelCase")
+class CamelSection:
+    pool_size: int = 1
+    inner: Camel = Camel()
+
+
+@ox.config
+class Plain:
+    section: CamelSection = CamelSection()
+    top_level: int = 0
+
+
+def test_each_class_owns_its_naming_wherever_it_is_used(tmp_path: Path) -> None:
+    file = write(
+        tmp_path / "a.toml",
+        "top_level = 1\n[section]\npoolSize = 5\n[section.inner]\npool_size = 6\n",
+    )
+    settings = cfg.load(Plain, [cfg.file(file)])
+    assert settings.top_level == 1
+    assert settings.section.pool_size == 5
+    assert settings.section.inner.pool_size == 6
+    with pytest.raises(ox.ValidationError, match="did you mean 'poolSize'"):
+        cfg.load(Plain, [cfg.file(write(tmp_path / "b.toml", "[section]\npool_size = 5\n"))])
+
+
+def frame_text(error: BaseException) -> str:
+    """Everything the local variables of the frames of a traceback, and of the exceptions it
+    chains to, can show: what an error tracker or --showlocals captures."""
+    seen: list[str] = []
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None:
+            continue
+        pending.extend([current.__context__, current.__cause__])
+        traceback = current.__traceback__
+        while traceback is not None:
+            if "/oxiform/" in traceback.tb_frame.f_code.co_filename:  # not the test's own frames
+                for name, value in traceback.tb_frame.f_locals.items():
+                    seen.append(f"{name}={value!r}")
+            traceback = traceback.tb_next
+    return "\n".join(seen)
+
+
+def test_a_failed_load_keeps_no_values_in_the_frames_of_its_traceback(tmp_path: Path) -> None:
+    secret = "S3CR3T-from-a-file"
+    file = write(tmp_path / "a.toml", f'[db]\nurl = "u"\npassword = "{secret}"\npool_size = 5000\n')
+    dotenv = write(tmp_path / ".env", f'APP_PLUGINS=["{secret}"]\nAPP_SERVER__PORT=0\n')
+    for sources in ([cfg.file(file)], [cfg.file(file), cfg.dotenv(dotenv)]):
+        with pytest.raises(ox.ValidationError) as caught:
+            cfg.load(App, sources)
+        shown = frame_text(caught.value)
+        assert secret not in shown
+        for name in ("document", "tree", "layers", "readings", "settings="):
+            assert f"\n{name}" not in "\n" + shown
+        assert caught.value.__context__ is None
+    unreadable = write(tmp_path / "bad.toml", f'password = "{secret}\n')
+    with pytest.raises(ox.DecodeError) as caught:
+        cfg.load(App, [cfg.file(unreadable)])
+    assert secret not in frame_text(caught.value)
+
+
+def test_the_origin_registry_can_forget_while_its_lock_is_held() -> None:
+    from oxiform._config import origin as registry
+
+    settings = cfg.load(App, [cfg.env(environ=BASE_ENV)])
+    with registry._LOCK:  # pyright: ignore[reportPrivateUsage]
+        del settings  # the weakref callback takes the same lock, on the same thread
+
+
+@ox.config(env_prefix="W_")
+class Workers:
+    workers: int | Literal["auto"] = "auto"
+    mode: int | float | Literal["fast", "slow"] = "fast"
+
+
+def test_a_union_of_a_number_and_a_literal_says_what_it_accepts() -> None:
+    def message(**variables: str) -> str:
+        with pytest.raises(ox.ValidationError) as caught:
+            cfg.load(Workers, [cfg.env(environ=variables)])
+        return caught.value.errors()[0]["message"]
+
+    assert message(W_WORKERS="abc").startswith("expected an integer or 'auto' (from env W_WORKERS)")
+    assert message(W_WORKERS="4.5").startswith("expected an integer or 'auto'")
+    assert message(W_MODE="abc").startswith(
+        "expected an integer or a number or one of 'fast', 'slow'"
+    )
+    assert cfg.load(Workers, [cfg.env(environ={"W_WORKERS": "4"})]).workers == 4
+    assert cfg.load(Workers, [cfg.env(environ={"W_WORKERS": "auto"})]).workers == "auto"

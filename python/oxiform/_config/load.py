@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any, TypeVar, cast
 
-from oxiform._config.merge import Tree, merge, origins_of, resolve, to_wire
+from oxiform._config.merge import Tree, merge, origins_of, resolve, to_wire, unencodable
 from oxiform._config.origin import Origin, recall, remember, where
 from oxiform._config.schema import (
     SectionSchema,
@@ -35,6 +35,28 @@ def load(
     """Reads ``sources`` (the last one wins; ``None`` is the environment alone) and returns
     the validated config. Raises ``ox.DecodeError`` when a source cannot be read and
     ``ox.ValidationError`` when the values do not fit; both say which source and key."""
+    outcome = _prepare(cls, sources, max_errors, limits)
+    # Raised here, and not where it was made: the frames that held the document, the merged
+    # tree and every layer are gone by now, so a traceback capture (Sentry, rich, pytest
+    # --showlocals) does not find the values of the sources in them.
+    if outcome.error is not None:
+        raise outcome.error
+    return cast("_T", outcome.settings)
+
+
+class _Outcome:
+    """The config or the error ``_prepare`` made, returned and not raised (see ``load``)."""
+
+    __slots__ = ("error", "settings")
+
+    def __init__(self, settings: object = None, error: ValidationError | None = None) -> None:
+        self.settings = settings
+        self.error = error
+
+
+def _prepare(
+    cls: type, sources: Sequence[Source] | None, max_errors: int, limits: Limits | None
+) -> _Outcome:
     options = config_options(cls)
     if options is None:
         raise TypeError(
@@ -48,23 +70,35 @@ def load(
     readings = [source.read(context) for source in chosen]
     unreadable = [problem for reading in readings for problem in reading.problems]
     if unreadable:
-        raise _unreadable(unreadable, cls, max_errors)
+        return _Outcome(error=_unreadable(unreadable, cls, max_errors))
     layers = [layer for reading in readings for layer in reading.layers]
     tree = merge(layers)
     kinds = {layer.label: layer.kind for layer in layers}
+    unknown = [problem for reading in readings for problem in reading.unknown]
+    # Errors are caught into variables and turned into reports after the `except` blocks, so
+    # that the report does not carry them (and their frames) as its context.
+    unwritable: Exception | None = None
+    document = b""
     try:
         document = json_encode(to_wire(tree, schema))
-    except EncodeError as error:
-        raise _unwritable(error, tree, schema, cls, max_errors) from None
-    unknown = [problem for reading in readings for problem in reading.unknown]
+    except (EncodeError, UnicodeEncodeError) as error:
+        unwritable = error
+    if unwritable is not None:
+        pointer = unwritable.pointer if isinstance(unwritable, EncodeError) else None
+        return _Outcome(error=_unwritable(pointer, tree, schema, cls, max_errors))
+    failure: ValidationError | None = None
+    settings: object = None
     try:
-        settings = json_decode(document, cls, mode="lax", max_errors=max_errors, limits=limits)
+        settings = cast(
+            "object", json_decode(document, cls, mode="lax", max_errors=max_errors, limits=limits)
+        )
     except ValidationError as error:
-        raise _located(error, unknown, tree, context, chosen, kinds, max_errors) from None
-    if unknown:
-        raise _located(None, unknown, tree, context, chosen, kinds, max_errors)
+        failure = error
+    if failure is not None or unknown:
+        located = _located(failure, unknown, tree, context, chosen, kinds, max_errors)
+        return _Outcome(error=located)
     remember(settings, origins_of(tree, schema))
-    return settings
+    return _Outcome(settings)
 
 
 def _sources(sources: object) -> tuple[Source, ...]:
@@ -124,16 +158,21 @@ def _unreadable(problems: list[Problem], cls: type, max_errors: int) -> Validati
 
 
 def _unwritable(
-    error: EncodeError, tree: Tree, schema: SectionSchema, cls: type, max_errors: int
+    pointer: str | None, tree: Tree, schema: SectionSchema, cls: type, max_errors: int
 ) -> ValidationError:
-    """A value that cannot be written as JSON (``nan``, an unsupported object)."""
-    wire = [part.replace("~1", "/").replace("~0", "~") for part in error.pointer.split("/")[1:]]
+    """A value that cannot be written as JSON (``nan``, an unsupported object, text with
+    bytes that are not UTF-8). Nothing of the value is shown."""
+    wire = [part.replace("~1", "/").replace("~0", "~") for part in (pointer or "").split("/")[1:]]
     python, leaf = resolve(tree, schema, cast("list[str | int]", wire))
+    if pointer is None:
+        found = unencodable(tree)
+        python, leaf = (found[0], found[1]) if found is not None else ((), None)
     label = leaf.origin.source if leaf else "default"
     source = f" in {where(leaf.origin)}" if leaf else ""
+    what = f"{'.'.join(python)}{source}" if python else "a value"
     message = (
-        f"{'.'.join(python) or 'a value'}{source} cannot be used: {error}; "
-        "give it a value the field's type reads"
+        f"{what} cannot be used: it has no JSON form (NaN, infinity, an unsupported object, or "
+        "text that is not valid UTF-8); give it a value the field's type reads"
     )
     problem = _detail("config_source", [], message, {"key": ".".join(python)})
     kind = leaf.origin.kind if leaf else "config"

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from oxiform._config.origin import DEFAULT_ORIGIN, Origin
-from oxiform._config.schema import UNKNOWN, SectionSchema, section_schema
+from oxiform._config.schema import UNKNOWN, FieldSchema, SectionSchema, section_schema
 from oxiform._config.sources import Entry, Layer
 from oxiform._secret import Secret
 
@@ -71,25 +71,92 @@ def plain(value: object) -> object:
     return value
 
 
-def to_wire(tree: Tree, section: SectionSchema | None) -> dict[str, object]:
+def to_wire(tree: Tree, section: SectionSchema | None, default: object = None) -> dict[str, object]:
     """The tree as a document the engine reads: wire names instead of Python names. A key that
-    is no field stays as it is, so that the engine reports it."""
+    is no field stays as it is, so that the engine reports it.
+
+    ``default`` is the instance the section has as its default, when that is not the class's
+    own defaults (``db: Db = Db(url="custom")``): the keys no source set come from it.
+    """
     document: dict[str, object] = {}
     for name, node in tree.items():
         field = section.fields.get(name) if section is not None else None
         key = field.wire if field is not None else name.removeprefix(UNKNOWN)
         if isinstance(node, dict):
             below = section_schema(field.section) if field is not None and field.section else None
-            document[key] = to_wire(cast("Tree", node), below)
+            inner = _default_of(field, default)
+            document[key] = to_wire(cast("Tree", node), below, inner)
+        elif field is not None and field.section is not None and _is_empty_marker(node):
+            # `[db]` with nothing under it: the section, built from its defaults.
+            document[key] = to_wire({}, section_schema(field.section), _default_of(field, default))
         else:
             document[key] = plain(cast("Leaf", node).value)
-    if section is not None:
-        # A required section that no source set is an empty one, so that the engine reports
-        # its missing fields (db.url) and not the section as a whole.
-        for field in section.fields.values():
-            if field.section is not None and not field.has_default and field.name not in tree:
-                document[field.wire] = to_wire({}, section_schema(field.section))
+    if section is None:
+        return document
+    for field in section.fields.values():
+        if field.section is not None and not field.has_default and field.name not in tree:
+            # A required section that no source set is an empty one, so that the engine
+            # reports its missing fields (db.url) and not the section as a whole.
+            document[field.wire] = to_wire({}, section_schema(field.section))
+        elif default is not None and field.wire not in document:
+            document[field.wire] = _seed_value(getattr(default, field.name), field)
     return document
+
+
+def _default_of(field: FieldSchema | None, parent: object) -> object:
+    """The instance that is the default of the section ``field``: what the default of the
+    section around it holds, else the default declared on the field itself."""
+    if field is None or field.section is None:
+        return None
+    if parent is not None:
+        held = getattr(parent, field.name, None)
+        if isinstance(held, field.section):
+            return held
+    if field.default_section is not None:
+        made = field.default_section()
+        if isinstance(made, field.section):
+            return made
+    return None
+
+
+def _seed_value(value: object, field: FieldSchema) -> object:
+    if field.section is not None and isinstance(value, field.section):
+        below = section_schema(field.section)
+        return {
+            inner.wire: _seed_value(getattr(value, inner.name), inner)
+            for inner in below.fields.values()
+        }
+    return plain(value)
+
+
+def unencodable(tree: Tree, prefix: tuple[str, ...] = ()) -> tuple[tuple[str, ...], Leaf] | None:
+    """The first value of the tree that holds text with bytes that are not UTF-8, where it is."""
+    for name, node in tree.items():
+        path = (*prefix, name.removeprefix(UNKNOWN))
+        if isinstance(node, dict):
+            found = unencodable(cast("Tree", node), path)
+            if found is not None:
+                return found
+        elif _bad_text(plain(cast("Leaf", node).value)):
+            return path, cast("Leaf", node)
+    return None
+
+
+def _bad_text(value: object) -> bool:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+        return False
+    if isinstance(value, dict):
+        return any(
+            _bad_text(key) or _bad_text(item)
+            for key, item in cast("dict[object, object]", value).items()
+        )
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_bad_text(item) for item in cast("list[object]", value))
+    return False
 
 
 def resolve(

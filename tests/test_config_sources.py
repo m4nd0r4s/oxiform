@@ -11,6 +11,7 @@ import pytest
 import oxiform as ox
 from oxiform import cfg
 from oxiform._config.toml_lines import key_lines, line_of_key
+from oxiform.errors import ErrorDetails
 
 
 @ox.config
@@ -230,16 +231,20 @@ def test_dotenv_skips_a_byte_order_mark_and_windows_line_ends(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("text", "line", "words"),
     [
-        (DOTENV_BASE + "not a pair\n", 3, ["expected KEY=value", "'not a pair'"]),
+        (DOTENV_BASE + "not a pair\n", 3, ["not KEY=value", "quote a value that spans lines"]),
         (DOTENV_BASE + 'APP_DEBUG="open\n', 3, ["quote is never closed"]),
         (DOTENV_BASE + "APP_DEBUG='open\n", 3, ["' quote is never closed"]),
-        (DOTENV_BASE + 'APP_DEBUG="a" b\n', 3, ["text after the closing", "quote the whole value"]),
+        (
+            DOTENV_BASE + 'APP_DEBUG="a" b\n',
+            3,
+            ["text follows the closing", "quote the whole value"],
+        ),
         (
             "APP_DEBUG=1\nAPP_DB__URL=u\nAPP_DEBUG=0\n",
             3,
             ["APP_DEBUG is set twice, on lines 1 and 3"],
         ),
-        ("1BAD=x\n", 1, ["expected KEY=value"]),
+        ("1BAD=x\n", 1, ["not KEY=value"]),
     ],
 )
 def test_dotenv_syntax_problems_name_the_file_and_line(
@@ -640,3 +645,118 @@ def test_line_of_key_falls_back_to_the_nearest_ancestor() -> None:
 def test_key_lines_never_raises_on_text_it_cannot_follow() -> None:
     assert key_lines("a = [1, 2") == {("a",): 1}
     assert key_lines("= nothing") == {}
+
+
+# -- a source that cannot be read never quotes what is in it ---------------------------------------
+
+PEM = (
+    "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAA\n"
+    "S3CR3TKEYMATERIAL\n-----END PRIVATE KEY-----\n"
+)
+
+
+def only_problem(sources: list[cfg.Source]) -> ErrorDetails:
+    error = failure(sources, ox.DecodeError)
+    (problem,) = error.errors()
+    assert problem["code"] == "config_source"
+    return problem
+
+
+def test_an_unquoted_multi_line_key_in_dotenv_is_reported_by_line_without_quoting_it(
+    tmp_path: Path,
+) -> None:
+    file = write(tmp_path / ".env", "APP_TOKEN=" + PEM)
+    error = failure([cfg.dotenv(file)], ox.DecodeError)
+    messages = " ".join(item["message"] for item in error.errors())
+    assert f"{file}:2: this line is not KEY=value" in messages
+    assert "quote a value that spans lines" in messages
+    for text in ("MIIEvQ", "S3CR3T", "BEGIN", "END PRIVATE"):
+        assert text not in messages + repr(error.errors())
+
+
+def test_text_after_a_closing_quote_and_a_line_without_an_equals_sign_are_not_quoted(
+    tmp_path: Path,
+) -> None:
+    junk = write(tmp_path / "a.env", 'A_TOK="abc"S3CR3T\n')
+    problem = only_problem([cfg.dotenv(junk)])
+    assert "text follows the closing" in problem["message"]
+    assert "S3CR3T" not in problem["message"] and "abc" not in problem["message"]
+    bare = write(tmp_path / "b.env", "S3CR3TVALUEWITHNOEQUALS\n")
+    problem = only_problem([cfg.dotenv(bare)])
+    assert "not KEY=value" in problem["message"]
+    assert "S3CR3T" not in problem["message"]
+
+
+def test_a_dotenv_duplicate_names_the_variable_and_not_its_value(tmp_path: Path) -> None:
+    file = write(tmp_path / ".env", "APP_DEBUG=S3CR3Tone\nAPP_DEBUG=S3CR3Ttwo\n")
+    message = only_problem([cfg.dotenv(file)])["message"]
+    assert "APP_DEBUG is set twice, on lines 1 and 2" in message
+    assert "S3CR3T" not in message
+
+
+def test_invalid_json_in_a_variable_or_a_file_does_not_quote_the_text(tmp_path: Path) -> None:
+    variable = only_problem([cfg.env(environ={**REQUIRED, "APP_PLUGINS": "[S3CR3T, oops"})])
+    assert "not valid JSON" in variable["message"]
+    assert "syntax error at line 1, column 2 (the text is not shown)" in variable["message"]
+    assert "S3CR3T" not in variable["message"]
+    file = write(tmp_path / "bad.json", '{"debug": S3CR3T}')
+    problem = only_problem([cfg.file(file)])
+    assert "syntax error at line 1" in problem["message"]
+    assert "S3CR3T" not in problem["message"]
+
+
+def test_invalid_toml_does_not_quote_the_text(tmp_path: Path) -> None:
+    for text in (
+        "password = hunter2-S3CR3T\n",
+        'password = "S3CR3T\n',
+        "[S3CR3T\n",
+        'a = "x" S3CR3T\n',
+    ):
+        file = write(tmp_path / "bad.toml", text)
+        problem = only_problem([cfg.file(file)])
+        assert "S3CR3T" not in problem["message"] + repr(problem["ctx"])
+        assert "line 1" in problem["message"]
+
+
+def test_a_value_that_is_not_utf8_is_a_located_problem_without_the_value() -> None:
+    bad = "tok\udcffen-S3CR3T"
+    for name, value in (("APP_DEBUG", bad), ("APP_PLUGINS", f'["{bad}"]')):
+        error = failure([cfg.env(environ={**REQUIRED, name: value})], ox.DecodeError)
+        (problem,) = error.errors()
+        assert f"the value of {name} is not valid text" in problem["message"]
+        assert problem["ctx"]["key"] == name
+        assert "S3CR3T" not in repr(error.errors()) + str(error)
+        assert error.__context__ is None and error.__cause__ is None
+
+
+def test_a_mapping_value_that_is_not_utf8_is_a_problem_without_the_value() -> None:
+    data: dict[str, object] = {"db": {"url": "u", "password": "p\udcffS3CR3T"}}
+    error = failure([cfg.mapping(data)], ox.DecodeError)
+    (problem,) = error.errors()
+    assert problem["code"] == "config_source"
+    assert "S3CR3T" not in repr(error.errors())
+    assert error.__context__ is None
+    assert error.unreadable_sources() == ["mapping"]
+
+
+def test_secrets_with_text_that_is_not_utf8_still_compare() -> None:
+    assert ox.Secret("a\udcffb") == ox.Secret("a\udcffb")
+    assert ox.Secret("a\udcffb") != ox.Secret("a\udcfec")
+
+
+def test_the_repr_of_an_env_or_mapping_source_shows_no_value() -> None:
+    environ = {"APP_DB__PASSWORD": "S3CR3T"}
+    mapped = cfg.mapping({"db": {"password": "S3CR3T"}}, name="cli")
+    assert "S3CR3T" not in repr(cfg.env(environ=environ)) + repr(mapped)
+    assert repr(cfg.env(environ=environ)) == "cfg.env(environ=<1 variables>, forbid_unknown=False)"
+    assert repr(mapped) == "cfg.mapping(<1 keys>, name='cli')"
+    assert repr(cfg.env()) == "cfg.env(environ=os.environ, forbid_unknown=False)"
+
+
+def test_a_mapping_cannot_take_a_name_that_already_means_something() -> None:
+    with pytest.raises(
+        ValueError, match="name 'env' is how errors and origins call the environment"
+    ):
+        cfg.mapping({}, name="env")
+    with pytest.raises(ValueError, match="name 'default' is how errors and origins call"):
+        cfg.mapping({}, name="default")
