@@ -74,16 +74,14 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         string: NodeId,
         event: Event<'input>,
     ) -> Step<S> {
-        let mut accepted = Vec::new();
-        if union.integer.is_some() {
-            accepted.push("an integer");
+        if matches!(self.plan.node(string), Node::String(_)) {
+            return self.value(string, event);
         }
-        if union.float.is_some() {
-            accepted.push("a number");
-        }
-        if union.bool.is_some() {
-            accepted.push("a boolean");
-        }
+        let accepted = accepted_scalars(
+            union.integer.is_some(),
+            union.float.is_some(),
+            union.bool.is_some(),
+        );
         if accepted.is_empty() {
             return self.value(string, event);
         }
@@ -93,7 +91,6 @@ impl<'input, R: EventReader<'input>, S: Sink> Executor<'_, 'input, R, S> {
         match outcome {
             Ok(Some(value)) => Ok(Some(value)),
             Ok(None) | Err(Stop::TooManyErrors) => {
-                let accepted = accepted.join(" or ");
                 for issue in &mut issues {
                     issue.message = widen_message(&accepted, &issue.message);
                 }
@@ -412,9 +409,24 @@ enum LaxVariant {
     Scalar(NodeId),
 }
 
-/// The variant that lax mode reads `text` as: `None` for an empty string, then the first of
-/// integer, float and bool that the text is valid for.
-/// `expected one of 'auto'` becomes `expected an integer or 'auto'`.
+/// What a union accepts besides its text-only variant, as a phrase: `an integer`, `a number`
+/// (an integer is a number, so a union with both says only that), `a boolean`; empty when the
+/// union has no such variant.
+fn accepted_scalars(integer: bool, float: bool, boolean: bool) -> String {
+    let mut names = Vec::new();
+    match (integer, float) {
+        (_, true) => names.push("a number"),
+        (true, false) => names.push("an integer"),
+        (false, false) => {}
+    }
+    if boolean {
+        names.push("a boolean");
+    }
+    names.join(" or ")
+}
+
+/// `expected one of 'auto'` becomes `expected an integer or 'auto'`, and with several values
+/// `expected an integer or one of 'a', 'b'`; any other message gets the phrase appended.
 fn widen_message(accepted: &str, message: &str) -> String {
     match message.strip_prefix("expected one of ") {
         Some(values) if values.contains(", ") => {
@@ -425,6 +437,8 @@ fn widen_message(accepted: &str, message: &str) -> String {
     }
 }
 
+/// The variant that lax mode reads `text` as: `None` for an empty string, then the first of
+/// integer, float and bool that the text is valid for.
 fn lax_variant(union: &UnionPlan, text: &str) -> Option<LaxVariant> {
     if let (true, true, Some(null)) = (text.is_empty(), union.empty_is_none, union.null) {
         return Some(LaxVariant::Null(null));
@@ -449,4 +463,38 @@ fn lax_variant(union: &UnionPlan, text: &str) -> Option<LaxVariant> {
 
 fn allowed(tagged: &TaggedPlan) -> Vec<(&'static str, ContextValue)> {
     vec![("allowed", ContextValue::Texts(tagged.tags.clone()))]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accepted_scalars, widen_message};
+
+    #[test]
+    fn names_what_a_union_accepts_without_repeating_itself() {
+        assert_eq!(accepted_scalars(true, false, false), "an integer");
+        assert_eq!(accepted_scalars(false, true, false), "a number");
+        assert_eq!(accepted_scalars(true, true, false), "a number");
+        assert_eq!(
+            accepted_scalars(true, false, true),
+            "an integer or a boolean"
+        );
+        assert_eq!(accepted_scalars(true, true, true), "a number or a boolean");
+        assert_eq!(accepted_scalars(false, false, false), "");
+    }
+
+    #[test]
+    fn widens_the_message_of_a_text_variant() {
+        assert_eq!(
+            widen_message("an integer", "expected one of 'auto'"),
+            "expected an integer or 'auto'"
+        );
+        assert_eq!(
+            widen_message("a number", "expected one of 'fast', 'slow'"),
+            "expected a number or one of 'fast', 'slow'"
+        );
+        assert_eq!(
+            widen_message("an integer", "invalid date"),
+            "invalid date; the union also accepts an integer"
+        );
+    }
 }
