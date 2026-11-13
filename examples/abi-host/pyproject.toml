@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "oxiform-abi-host"
+version = "0.0.1"
+description = "A sample host of the oxiform embedding ABI, used by its tests"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+dependencies = ["oxiform"]
+
+[tool.maturin]
+module-name = "oxiform_abi_host"

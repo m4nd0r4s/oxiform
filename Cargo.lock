@@ -48,6 +48,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oxiform-abi"
+version = "0.0.1"
+dependencies = [
+ "pyo3",
+]
+
+[[package]]
+name = "oxiform-abi-export"
+version = "0.0.1"
+dependencies = [
+ "oxiform-abi",
+ "oxiform-core",
+]
+
+[[package]]
+name = "oxiform-abi-host"
+version = "0.0.1"
+dependencies = [
+ "oxiform-abi",
+ "pyo3",
+]
+
+[[package]]
 name = "oxiform-core"
 version = "0.0.1"
 dependencies = [
@@ -73,6 +96,8 @@ name = "oxiform-py"
 version = "0.0.1"
 dependencies = [
  "base64",
+ "oxiform-abi",
+ "oxiform-abi-export",
  "oxiform-core",
  "oxiform-formats",
  "pyo3",

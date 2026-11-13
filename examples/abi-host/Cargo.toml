@@ -1,0 +1,20 @@
+[package]
+name = "oxiform-abi-host"
+description = "A sample host of the embedding ABI: a PyO3 extension that decodes and encodes through the capsule of oxiform, without linking its engine (it is also what the ABI tests drive)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "oxiform_abi_host"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Types and the version check only: no oxiform-core, no oxiform-formats, no plan cache.
+oxiform-abi = { workspace = true, features = ["pyo3"] }
+pyo3.workspace = true
+
+[lints]
+workspace = true
