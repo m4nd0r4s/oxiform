@@ -1,0 +1,18 @@
+[package]
+name = "oxiform-abi"
+description = "The embedding C ABI of oxiform: the types and the version check a native extension needs to use oxiform through its PyCapsule, without linking the engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# `import`: finds the capsule of the installed oxiform from a PyO3 extension module.
+pyo3 = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+
+[lints]
+workspace = true

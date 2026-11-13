@@ -11,6 +11,8 @@ repository = "https://github.com/m4nd0r4s/oxiform"
 publish = false
 
 [workspace.dependencies]
+oxiform-abi = { path = "crates/oxiform-abi" }
+oxiform-abi-export = { path = "crates/oxiform-abi-export" }
 oxiform-core = { path = "crates/oxiform-core" }
 oxiform-formats = { path = "crates/oxiform-formats" }
 pyo3 = "0.30"
