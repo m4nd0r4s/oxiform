@@ -805,6 +805,98 @@ Order  (plan: 14 nodes, 1 slow path)
 
 The CLI also runs as `python -m oxiform`.
 
+### 8.5 JSON Schema (OX-5)
+
+oxiform writes JSON Schema 2020-12 for every type it reads: models, unions (plain, `ox.Tagged`, `ox.External`, `ox.Untagged`), enums, literals, containers, optionals, constraints, nested and recursive models. A web framework wants more than one schema per type: it wants **one bundle** for all the types of an application, with shared definitions, names that never collide and refs that fit its own document (OpenAPI keeps them under `#/components/schemas/`).
+
+```python
+ox.json_schema(User)                                  # one self-contained document
+ox.json_schema(User, mode="serialization")            # what encode writes
+
+bundle = ox.json_schema_bundle(
+    [CreateUser, ox.SchemaTarget(User, mode="serialization"), list[Order]],
+    ref_template="#/components/schemas/{name}",
+)
+bundle.defs                 # {"Address": {...}, "CreateUser": {...}, "Order": {...}, "User": {...}}
+bundle.schemas[1]           # {"$ref": "#/components/schemas/User"}: the schema of the second target
+bundle.schemas[2]           # {"type": "array", "items": {"$ref": "#/components/schemas/Order"}}
+```
+
+**`ox.json_schema(type, *, mode="validation", coercion="strict") -> dict`** is the schema of one type, as a document: `{"$schema": "https://json-schema.org/draft/2020-12/schema", "$ref": "#/$defs/User", "$defs": {...}}` for a model or an enum, and the schema itself plus `$defs` for any other type. Nothing outside the document is referenced, so it validates on its own. It is a bundle of one with `ref_template="#/$defs/{name}"`.
+
+**`ox.json_schema_bundle(targets, *, mode="validation", coercion="strict", ref_template="#/$defs/{name}") -> ox.SchemaBundle`** takes a list of types (or `ox.SchemaTarget`) and returns:
+
+| Member | Meaning |
+| --- | --- |
+| `bundle.defs` | `dict[str, dict]`: the named schemas (models and enums reached from any target) in the order of their names, so a document built from it is byte-for-byte reproducible |
+| `bundle.schemas` | `tuple[dict, ...]`: one schema per target, in the order of `targets`. A model or an enum is a `{"$ref": ...}`; any other type is written in place, with `$ref`s inside |
+| `bundle.targets` | `tuple[ox.SchemaTarget, ...]`: the targets with every default filled in |
+| `bundle.schema_for(target)` | The schema of one target (a type or a `SchemaTarget`, compared as `targets` are), or `KeyError` that lists the targets |
+
+`ox.SchemaTarget(type, mode=None, coercion=None)` overrides `mode` and `coercion` for one target; `None` takes the value of the call, which is how a framework asks for requests in validation mode and responses in serialization mode in one bundle. `ox.json_schema_bundle([])` is an empty bundle.
+
+**Modes.** `mode="validation"` describes what `decode` accepts, `mode="serialization"` what `encode` writes (with `type=` the declared type, as in section 5.1). They differ where the two directions differ:
+
+| | `validation` | `serialization` |
+| --- | --- | --- |
+| Field with a default | Optional; `default` is given when the value is JSON (a `default_factory` gives none, because the schema never runs user code) | Required, as encode writes every field |
+| Field with `skip_if_default`, `skip_if` or `skip_if_none` | As above | Optional; with `skip_if_none` the `null` branch is dropped, because a `None` is never written |
+| `skip_encode` / `skip_decode` / `skip` / `init=False` | `skip_encode` fields are present; the others are not | `skip_decode` and `init=False` fields are present; the others are not |
+| `rename`, `rename_all` | The wire name | The wire name |
+| `aliases` | Each alias is a property of the same schema, `deprecated`, and the field is required by any of its names (`anyOf` of `required`) | Absent: only the wire name is written |
+| `unknown="forbid"` | `additionalProperties: false` | Not stated: a model writes its own fields only |
+| `tag_field` | The tag is optional (reading a concrete class does not need it) and must be the tag of the class | The tag is required |
+| `flatten` | The fields of the flattened model are properties of the model | The same |
+| `Decimal` | A number or a string (`"1.5"` and `1.5` both read, D11) | A string (D11) |
+
+**Coercion.** `coercion="lax"` (validation only; with `mode="serialization"` it is a `ValueError`) describes what lax mode reads (section 4.5): `int` and `Flag` also accept a string of a whole number, `float` a string of a number, `bool` the words `true`, `false`, `yes`, `no`, `on`, `off`, `1` and `0` in any case, an `int` member of a `Literal` or `Enum` its string, and a `T | None` an empty string where `T` has no empty form. The text forms are `{"type": "string", "pattern": ...}` branches of an `anyOf`; limits (`minimum`, `maximum`) apply to the numeric branch, since a pattern cannot say them.
+
+**Representation of each type.**
+
+| Python | JSON Schema |
+| --- | --- |
+| `bool`, `int`, `float`, `str`, `None` | `boolean`, `integer`, `number`, `string`, `null` |
+| `Ge`, `Le` | `minimum`, `maximum` |
+| `Len` | `minLength`, `maxLength` on `str`; `minItems`, `maxItems` on arrays; `minProperties`, `maxProperties` on `dict`. Not stated on `bytes`, whose length is that of the decoded bytes |
+| `Pattern`, `OneOf` | `pattern`, `enum` |
+| `bytes`, `bytearray` | `{"type": "string", "contentEncoding": "base64"}` |
+| `datetime`, `date` | `format: "date-time"`, `format: "date"` |
+| `ox.NaiveDateTime`, `time` | `string` with a `pattern` (a `datetime` without offset; a time with an optional offset), because no `format` says that |
+| `timedelta` | `format: "duration"` |
+| `UUID`, `IPv4Address`, `IPv6Address` | `format: "uuid"`, `"ipv4"`, `"ipv6"` |
+| `IPv4Network`, `IPv6Network`, `IPv4Interface`, `IPv6Interface`, `Path` and the other path classes, `ZoneInfo` | `string` with `format: "ipv4-network"`, `"ipv6-network"`, `"ipv4-interface"`, `"ipv6-interface"`, `"path"`, `"zoneinfo"` |
+| `Decimal` | `string` with `format: "decimal"` (validation: also a `number`) |
+| `Flag` | `integer` |
+| `list[T]`, `tuple[T, ...]` | `array` with `items` |
+| `set[T]`, `frozenset[T]` | `array` with `items` and `uniqueItems` |
+| `tuple[A, B]` | `array` with `prefixItems`, `minItems` and `maxItems` |
+| `dict[str, T]` | `object` with `additionalProperties` |
+| `Any`, a bare `list`, `dict`, `tuple`, `set`, `frozenset` | `{}`, and the bare container with `Any` items |
+| `Literal[...]` | `const` for one value, else `enum`; written in place |
+| `Enum` | a named definition `{"type": ..., "enum": [...]}` of the values |
+| `T \| None` | `anyOf` of `T` and `{"type": "null"}` |
+| `A \| B` (by the kind of value), `ox.Untagged` | `anyOf` |
+| `ox.Tagged`, `ox.External`, models that share a `tag_field` | `oneOf`, one variant per tag (below) |
+| a model | a named definition `{"type": "object", "properties": ..., "required": [...]}`, with the class docstring as `description` |
+
+**Tagged unions.**
+
+- *Internal* (`ox.Tagged("type")`, or models that declare the same `tag_field`): a variant whose model declares the tag field is `{"allOf": [{"$ref": Model}, {"required": ["type"]}]}`; one that does not is `{"allOf": [{"$ref": Model}, {"properties": {"type": {"const": "card"}}, "required": ["type"]}]}`, and written in place with the tag among its properties when the model is `unknown="forbid"`, because `additionalProperties` cannot see through `allOf`. When every variant declares the tag field the union also has an OpenAPI `discriminator` (`propertyName`, and a `mapping` from each tag to the `$ref`); consumers that do not know the keyword ignore it.
+- *Adjacent* (`content=`): `{"type": "object", "properties": {tag: {"const": ...}, content: variant}, "required": [tag, content]}`.
+- *External*: `{"type": "object", "properties": {tag: variant}, "required": [tag], "additionalProperties": false}`.
+
+**Names.** A definition is named after its class (`__qualname__`, after the last `<locals>.`), with every character outside `A-Z a-z 0-9 . _ -` written as `_`, so that the name is a valid OpenAPI component name and a JSON Pointer token. Names are decided by the set of types in the bundle and never by the order of `targets`:
+
+1. **Distinct classes with one name** (two `User` from different modules) are written with the shortest tail of their module path that tells them apart (`auth.models.User`, `billing.models.User`; `models.User` would not). A class whose name is unique keeps it bare. Two classes with the same module and qualified name (a class redefined, or defined inside two functions) get `_2`, `_3`… in the order the bundle first meets them; that is the only place the order of `targets` shows.
+2. **One class in two variants.** A class reached in more than one of the variants *validation*, *validation with lax coercion* and *serialization* gets one definition when its schemas are equal (the references inside included, so a model that holds a model with a default is equal only if that one is) and otherwise one per distinct schema, named `Name-Input`, `Name-Input-Lax` and `Name-Output` after the first variant that uses it. A bundle with only requests, or only responses, has no suffixes.
+3. Adding a target can therefore rename a definition (a type that collides, a class now used in both modes); a host that publishes names should build its bundle once with every target.
+
+**`ref_template`** is a `str` with `{name}` exactly once; anything else is a `ValueError` that shows an example. `$ref` values, and the `mapping` of a `discriminator`, are the template with the name put in.
+
+**Errors.** A type oxiform cannot read, a misplaced constraint, an ambiguous union and a model that refers to a class not defined yet are `ox.SchemaError`, exactly as in `decode` (the types are compiled first). A bad argument is a `TypeError` or a `ValueError` that says what to pass: `targets` that is not a list (`ox.json_schema_bundle(User)` says to call `ox.json_schema(User)` or pass `[User]`), a `mode` or `coercion` outside the values above, `coercion="lax"` with `mode="serialization"`, a bad `ref_template`.
+
+**Not yet.** `@ox.computed` fields (section 3.4), `ox.Secret`, `ox.Raw`, `doc`, `examples` and `deprecated` on fields (section 5.2), `ox.Policy` (a schema describes the default policy), `__oxiform_schema__` and the `ox schema` command join this section when they join the library. A `default` that cannot be written as JSON is left out.
+
 ## 9. Architecture and performance
 
 Each type is compiled once into a plan (a small IR) that a Rust executor runs against the events of the format reader, creating the Python objects directly. The executor is the same for all formats.
@@ -1066,7 +1158,9 @@ ox.messages.override(code, template)
 # --- extension and introspection ---
 @ox.codec(type); ox.register(type, *, via, parse=None, dump=None)
 ox.codecs.decimal_as_number        # ready-made codecs for ox.field(codec=...)
-ox.json_schema(type, *, mode="validation" | "serialization") -> dict
+ox.json_schema(type, *, mode="validation" | "serialization", coercion="strict" | "lax") -> dict   # section 8.5
+ox.json_schema_bundle(targets, *, mode="validation", coercion="strict", ref_template="#/$defs/{name}") -> ox.SchemaBundle
+ox.SchemaTarget(type, mode=None, coercion=None); ox.SchemaBundle    # .defs, .schemas, .targets, .schema_for(target)
 ox.explain(type) -> ox.Explanation; ox.warmup(*types)
 
 # --- config: from oxiform import config as cfg ---
