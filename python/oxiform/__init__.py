@@ -2,7 +2,15 @@
 
 from oxiform import json, pairs, urlencoded
 from oxiform._fields import field
-from oxiform._json_schema import SchemaBundle, SchemaTarget, json_schema, json_schema_bundle
+from oxiform._json_schema import (
+    JsonSchema,
+    SchemaBundle,
+    SchemaCoercion,
+    SchemaMode,
+    SchemaTarget,
+    json_schema,
+    json_schema_bundle,
+)
 from oxiform._models import Model, model, replace
 from oxiform._naive import NaiveDateTime
 from oxiform._oxiform import Limits, __version__, warmup
@@ -22,6 +30,7 @@ __all__ = [
     "External",
     "Ge",
     "Le",
+    "JsonSchema",
     "Limits",
     "Len",
     "Model",
@@ -30,7 +39,9 @@ __all__ = [
     "OxiformError",
     "Pattern",
     "SchemaBundle",
+    "SchemaCoercion",
     "SchemaError",
+    "SchemaMode",
     "SchemaTarget",
     "Tagged",
     "Untagged",

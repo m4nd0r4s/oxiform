@@ -2,18 +2,18 @@
 
 import json
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from oxiform._json_schema.names import assign_names
 from oxiform._json_schema.writer import (
-    Coercion,
-    Mode,
+    JsonSchema,
     NodeKey,
     NodeRegistry,
     Ref,
-    Schema,
+    SchemaCoercion,
+    SchemaMode,
     SchemaWriter,
     Variant,
 )
@@ -40,25 +40,25 @@ class SchemaTarget:
     values of the call."""
 
     type: Any
-    mode: Mode | None = None
-    coercion: Coercion | None = None
+    mode: SchemaMode | None = None
+    coercion: SchemaCoercion | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class SchemaBundle:
     """The schemas of several types that share their definitions."""
 
-    defs: dict[str, Schema]
+    defs: dict[str, JsonSchema]
     """The named schemas, models and enums, in the order of their names."""
-    schemas: tuple[Schema, ...]
+    schemas: tuple[JsonSchema, ...]
     """The schema of each target, in the order of ``targets``."""
     targets: tuple[SchemaTarget, ...]
     """The targets with ``mode`` and ``coercion`` filled in."""
     ref_template: str
-    mode: Mode
-    coercion: Coercion
+    mode: SchemaMode
+    coercion: SchemaCoercion
 
-    def schema_for(self, target: object) -> Schema:
+    def schema_for(self, target: object) -> JsonSchema:
         """The schema of ``target``, a type or a ``SchemaTarget``, as given to the bundle."""
         wanted = _resolve(target, self.mode, self.coercion)
         for known, schema in zip(self.targets, self.schemas, strict=True):
@@ -71,12 +71,12 @@ class SchemaBundle:
 def json_schema(
     type: object,  # noqa: A002
     *,
-    mode: Mode = "validation",
-    coercion: Coercion = "strict",
-) -> Schema:
+    mode: SchemaMode = "validation",
+    coercion: SchemaCoercion = "strict",
+) -> JsonSchema:
     """The JSON Schema 2020-12 document of one type, with its definitions under ``$defs``."""
     bundle = json_schema_bundle([type], mode=mode, coercion=coercion)
-    document: Schema = {"$schema": DRAFT, **bundle.schemas[0]}
+    document: JsonSchema = {"$schema": DRAFT, **bundle.schemas[0]}
     if bundle.defs:
         document["$defs"] = bundle.defs
     return document
@@ -85,8 +85,8 @@ def json_schema(
 def json_schema_bundle(
     targets: Iterable[object],
     *,
-    mode: Mode = "validation",
-    coercion: Coercion = "strict",
+    mode: SchemaMode = "validation",
+    coercion: SchemaCoercion = "strict",
     ref_template: str = "#/$defs/{name}",
 ) -> SchemaBundle:
     """The schemas of ``targets`` with shared definitions, named without collisions."""
@@ -106,7 +106,7 @@ def json_schema_bundle(
     def reference(ref: Ref) -> str:
         return ref_template.replace("{name}", names[group[(ref.cls, ref.variant)]])
 
-    defs: dict[str, Schema] = {}
+    defs: dict[str, JsonSchema] = {}
     for identifier, name in names.items():
         first = next(key for key in nodes if group[key] == identifier)
         defs[name] = _resolved(nodes[first], reference)
@@ -121,6 +121,12 @@ def json_schema_bundle(
 
 
 def _listed(targets: object) -> list[object]:
+    if isinstance(targets, set | frozenset | Mapping):
+        kind = type(typing.cast("object", targets)).__name__
+        raise TypeError(
+            "json_schema_bundle takes a list or a tuple of targets, because the order of a "
+            f"{kind} is not the order of the schemas; pass [type, ...]"
+        )
     bad = (
         isinstance(targets, str | bytes | type)
         or typing.get_origin(targets) is not None
@@ -134,7 +140,7 @@ def _listed(targets: object) -> list[object]:
     return list(typing.cast("Iterable[object]", targets))
 
 
-def _resolve(target: object, mode: Mode, coercion: Coercion) -> SchemaTarget:
+def _resolve(target: object, mode: SchemaMode, coercion: SchemaCoercion) -> SchemaTarget:
     if isinstance(target, SchemaTarget):
         resolved = SchemaTarget(
             target.type,
@@ -181,7 +187,7 @@ def _variant(target: SchemaTarget) -> Variant:
     return (target.mode, "strict" if target.mode == "serialization" else target.coercion)
 
 
-def _name_nodes(nodes: dict[NodeKey, Schema]) -> tuple[dict[int, str], dict[NodeKey, int]]:
+def _name_nodes(nodes: dict[NodeKey, JsonSchema]) -> tuple[dict[int, str], dict[NodeKey, int]]:
     """Groups the nodes whose schemas are equal and names each group.
 
     Two variants of one class are the same definition when their schemas are equal with every
@@ -224,7 +230,7 @@ def _frozen(value: Any, group: dict[NodeKey, int]) -> Any:
     if isinstance(value, Ref):
         return f"@{group[(value.cls, value.variant)]}"
     if isinstance(value, dict):
-        return {key: _frozen(item, group) for key, item in typing.cast("Schema", value).items()}
+        return {key: _frozen(item, group) for key, item in typing.cast("JsonSchema", value).items()}
     if isinstance(value, list):
         return [_frozen(item, group) for item in typing.cast("list[Any]", value)]
     return value
@@ -235,9 +241,8 @@ def _resolved(value: Any, reference: Callable[[Ref], str]) -> Any:
     if isinstance(value, Ref):
         return reference(value)
     if isinstance(value, dict):
-        return {
-            key: _resolved(item, reference) for key, item in typing.cast("Schema", value).items()
-        }
+        node = typing.cast("JsonSchema", value)
+        return {key: _resolved(item, reference) for key, item in node.items()}
     if isinstance(value, list):
         return [_resolved(item, reference) for item in typing.cast("list[Any]", value)]
     return value
