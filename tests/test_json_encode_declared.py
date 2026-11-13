@@ -1,12 +1,16 @@
 """``encode(obj, type=T)`` walks the declared type ``T``, not the class of ``obj`` (OX-2)."""
 
+import abc
 import dataclasses
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import Enum, IntEnum
 from types import SimpleNamespace
-from typing import Annotated, Any, NamedTuple, TypedDict
+from typing import Annotated, Any, Literal, NamedTuple, TypedDict
+from unittest.mock import Mock
 
 import pytest
 
@@ -300,9 +304,9 @@ def test_a_value_that_cannot_hold_fields_is_not_a_model(value: object) -> None:
 
 def test_a_model_is_not_a_value_of_a_type_without_fields() -> None:
     for declared in (int, str, Decimal, date):
-        with pytest.raises(ox.EncodeError, match=f"as {declared.__name__}: the declared type"):
+        with pytest.raises(ox.EncodeError, match=f"as {declared.__name__}: the value is not of"):
             ox.json.encode(Private(1, "a"), type=declared)
-    with pytest.raises(ox.EncodeError, match="as int: the declared type has no fields"):
+    with pytest.raises(ox.EncodeError, match="as int: the value is not of the declared type"):
         ox.json.encode({"id": 1}, type=int)
     with pytest.raises(ox.EncodeError, match="as a list"):
         ox.json.encode({"a": 1}, type=list[int])
@@ -580,3 +584,240 @@ def test_typeddict_and_namedtuple_are_not_declarable_yet() -> None:
         ox.json.encode(Point(1, 2), type=Point)
     with pytest.raises(ox.SchemaError, match="unsupported type"):
         ox.json.decode(b'{"id": 1}', Pair)
+
+
+# --- objects that only claim to be instances never reach the slot reader --------------------
+
+
+@dataclass(slots=True)
+class SlottedDS:
+    a: int
+    b: str
+
+
+@dataclass
+class PlainDS:
+    a: int
+    b: str
+
+
+@ox.model
+class ModelDS:
+    a: int
+    b: str
+
+
+class _ClaimsEverything(type):
+    def __instancecheck__(cls, instance: object) -> bool:
+        return True
+
+
+@dataclass(slots=True)
+class _WithInstanceCheck(metaclass=_ClaimsEverything):
+    a: int
+    b: str
+
+
+@dataclass(slots=True)
+class _AbstractDS(abc.ABC):
+    a: int
+    b: str
+
+
+class _Impostor:
+    """Not an instance of anything, with the attributes of a model."""
+
+    def __init__(self) -> None:
+        self.a = 1
+        self.b = "x"
+
+
+class _Proxy:
+    """Reports another class through ``__class__``, as lazy-object proxies and mocks do."""
+
+    def __init__(self, cls: type) -> None:
+        self._cls = cls
+        self.a = 1
+        self.b = "x"
+
+    @property
+    def __class__(self) -> type:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return self._cls
+
+
+_ABSTRACT_REGISTERED = _AbstractDS.register(_Impostor)
+_ANY_CLASS = [SlottedDS, PlainDS, ModelDS, _WithInstanceCheck, _AbstractDS]
+
+
+@pytest.mark.parametrize("declared", _ANY_CLASS)
+def test_an_object_that_claims_to_be_an_instance_is_read_by_attribute(declared: type) -> None:
+    assert encoded(_Proxy(declared), declared) == {"a": 1, "b": "x"}
+    assert encoded(_Impostor(), declared) == {"a": 1, "b": "x"}
+    assert encoded([_Proxy(declared)], list[declared]) == [{"a": 1, "b": "x"}]  # type: ignore[valid-type]
+
+
+@pytest.mark.parametrize("declared", [SlottedDS, PlainDS, ModelDS])
+def test_a_mock_with_a_spec_does_not_crash(declared: type) -> None:
+    mock = Mock(spec=declared)
+    assert isinstance(mock, declared)  # what Mock claims
+    with pytest.raises(ox.EncodeError, match="cannot encode Mock as"):
+        ox.json.encode(mock, type=declared)
+    mock.a, mock.b = 1, "x"
+    assert encoded(mock, declared) == {"a": 1, "b": "x"}
+    assert encoded({"inner": mock}, dict[str, declared]) == {"inner": {"a": 1, "b": "x"}}  # type: ignore[valid-type]
+
+
+def test_an_unset_slot_of_a_real_instance_is_missing_and_a_subclass_is_read_by_slot() -> None:
+    @dataclass(slots=True)
+    class Sub(SlottedDS):
+        c: int = 3
+
+    assert encoded(Sub(1, "x"), SlottedDS) == {"a": 1, "b": "x"}
+    value = Sub(1, "x")
+    del value.a
+    with pytest.raises(ox.EncodeError, match='has no attribute "a"'):
+        ox.json.encode(value, type=SlottedDS)
+
+
+def test_a_mapping_stands_for_the_variant_that_has_the_fields_without_running_getattr() -> None:
+    class CatchAll:
+        def __getattr__(self, name: str) -> object:
+            return 1
+
+    with pytest.raises(ox.EncodeError, match="none of the declared variants"):
+        ox.json.encode(CatchAll(), type=Annotated[Card | Pix, ox.Untagged()])
+    holder = SimpleNamespace(key="k")
+    assert encoded(holder, Annotated[Card | Pix, ox.Untagged()]) == {"key": "k"}
+
+
+# --- scalars are checked against the declared type ------------------------------------------
+
+
+class Status(Enum):
+    ON = "on"
+
+
+class Level(IntEnum):
+    LOW = 1
+
+
+@pytest.mark.parametrize(
+    ("value", "declared"),
+    [
+        ("SECRET", Literal["a", "b"]),
+        (1, Literal[True]),
+        (True, Literal[1]),
+        (Level.LOW, Literal[1]),
+        (1, type(None)),
+        (1, bool),
+        (0, bool),
+        (True, float),
+        (True, int),
+        (1.5, int),
+        ("1", int),
+        (b"x", str),
+        ("x", bytes),
+        (1, str),
+        (Decimal(1), float),
+        (1, Decimal),
+        ("on", Status),
+        (1, Status),
+        (datetime(2026, 1, 2, tzinfo=UTC), date),
+        (None, int),
+        (None, str),
+    ],
+)
+def test_a_scalar_must_be_of_the_declared_type(value: object, declared: Any) -> None:
+    with pytest.raises(ox.EncodeError) as raised:
+        ox.json.encode(value, type=declared)
+    assert "the value is not of the declared type" in str(raised.value)
+    assert "SECRET" not in str(raised.value)  # the message names the type, never the value
+
+
+@pytest.mark.parametrize(
+    ("value", "declared", "expected"),
+    [
+        ("a", Literal["a", "b"], "a"),
+        (1, Literal[1, "x"], 1),
+        (True, Literal[True], True),
+        (None, Literal[None], None),
+        (Status.ON, Literal[Status.ON], "on"),
+        (None, type(None), None),
+        (True, bool, True),
+        (1, int, 1),
+        (Level.LOW, int, 1),
+        (Level.LOW, Level, 1),
+        (1.5, float, 1.5),
+        (2, float, 2),  # an int stands for a float, a bool never does
+        ("x", str, "x"),
+        (Status.ON, Status, "on"),
+        (b"x", bytes, "eA=="),
+        (bytearray(b"x"), bytes, "eA=="),
+        (Decimal("1.5"), Decimal, "1.5"),
+        (date(2026, 1, 2), date, "2026-01-02"),
+    ],
+)
+def test_a_scalar_of_the_declared_type_is_written_by_its_class(
+    value: object, declared: Any, expected: object
+) -> None:
+    assert encoded(value, declared) == expected
+
+
+def test_scalars_are_checked_inside_models_and_collections() -> None:
+    @dataclass
+    class Result:
+        status: Literal["ok", "error"]
+        count: int
+        ratio: float
+        tags: list[str]
+
+    assert encoded(Result("ok", 1, 2, ["a"]), Result) == {
+        "status": "ok",
+        "count": 1,
+        "ratio": 2,
+        "tags": ["a"],
+    }
+    for bad in (
+        Result("SECRET", 1, 1.0, []),  # pyright: ignore[reportArgumentType]
+        Result("ok", True, 1.0, []),
+        Result("ok", 1, True, []),
+        Result("ok", 1, 1.0, [b"x"]),  # pyright: ignore[reportArgumentType]
+    ):
+        with pytest.raises(ox.EncodeError) as raised:
+            ox.json.encode(bad, type=Result)
+        assert raised.value.pointer in ("/status", "/count", "/ratio", "/tags/0")
+    assert encoded({"status": "ok", "count": 1, "ratio": 1.0, "tags": []}, Result)
+
+
+def test_a_field_whose_annotation_oxiform_cannot_read_only_takes_plain_values() -> None:
+    @ox.model
+    class Loose:
+        a: int
+        callback: Callable[[int], int] | None = ox.field(default=None, skip_decode=True)
+
+    # Fields that oxiform cannot read as a type keep the guard of a type without fields.
+    assert encoded(Loose(1, None), Loose) == {"a": 1, "callback": None}
+
+
+# --- the two escapes: Any and bare containers -----------------------------------------------
+
+
+def test_any_and_bare_containers_write_by_the_class_of_the_value() -> None:
+    secret = Private(1, "a")
+    full: dict[str, object] = {"id": 1, "name": "a", "password_hash": "hash", "notes": []}
+    assert encoded(secret, Any) == full
+    assert encoded([secret], list) == [full]
+    assert encoded({"k": secret}, dict) == {"k": full}
+    assert encoded((secret,), tuple) == [full]
+    assert encoded({1}, set) == [1]
+    assert encoded([secret], list[Any]) == [full]
+    # A declared item type filters.
+    assert encoded([secret], list[Public]) == [{"id": 1, "name": "a"}]
+
+
+def test_type_none_means_no_declared_type_and_none_is_spelled_type_of_none() -> None:
+    secret = Private(1, "a")
+    assert ox.json.encode(secret, type=None) == ox.json.encode(secret)
+    assert ox.json.encode(None, type=type(None)) == b"null"
+    with pytest.raises(ox.EncodeError):
+        ox.json.encode(1, type=type(None))

@@ -4,9 +4,10 @@ use oxiform_core::issues::PathSegment;
 use oxiform_core::writer::EventWriter;
 use pyo3::exceptions::{PyAttributeError, PyKeyError};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyByteArray, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PyMapping, PySet, PyString,
-    PyTuple,
+    PyTuple, PyType,
 };
 
 use super::{Declared, DeclaredField, DeclaredPlan, Leaf, StructSpec};
@@ -60,7 +61,7 @@ impl<W: EventWriter> ObjectWalker<'_, W> {
         match node {
             Declared::Any => self.value(object),
             Declared::Leaf(Leaf { name, .. }) | Declared::Literal { name, .. } => {
-                self.scalar(name, object)
+                self.scalar(plan, node, name, object)
             }
             Declared::Optional(inner) => {
                 if object.is_none() {
@@ -96,16 +97,39 @@ impl<W: EventWriter> ObjectWalker<'_, W> {
         }
     }
 
-    /// A value of a type without fields to filter. Writing it by its class is safe unless that
-    /// class has fields of its own: a model, a mapping or a sequence is not what was declared.
-    fn scalar(&mut self, name: &str, object: &Bound<'_, PyAny>) -> Result<(), EncodeFailure> {
-        if is_composite(object)? {
+    /// A value of a type without fields: a scalar of the declared class (an `int` stands for a
+    /// `float`, never a `bool` for either), or one of the values of a `Literal`. It is then
+    /// written by its class. Anything else, a model, a mapping or a sequence included, is not a
+    /// value of the declared type, and writing it by its class could leak what it holds.
+    fn scalar(
+        &mut self,
+        plan: &DeclaredPlan,
+        node: &Declared,
+        name: &str,
+        object: &Bound<'_, PyAny>,
+    ) -> Result<(), EncodeFailure> {
+        let accepted = match node {
+            // A field whose annotation oxiform cannot read: only a plain value stands for it.
+            Declared::Leaf(leaf) if leaf.classes.bind(object.py()).is_empty() => {
+                !is_composite(object)?
+            }
+            _ => {
+                let mut found = false;
+                for strictness in [Strictness::Exact, Strictness::Instance, Strictness::Lenient] {
+                    if matches(plan, node, object, strictness)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        if !accepted {
             return Err(mismatch(
                 object,
                 name,
-                "the declared type has no fields, so a model, a mapping or a sequence is not \
-                 a value of it; return a value of the declared type, or declare the type of \
-                 the model",
+                "the value is not of the declared type; return a value of it, or declare the \
+                 type of the value",
             ));
         }
         self.value(object)
@@ -427,8 +451,7 @@ fn can_hold_fields(object: &Bound<'_, PyAny>) -> bool {
 }
 
 fn source_of<'py>(spec: &StructSpec, object: &Bound<'py, PyAny>) -> PyResult<Option<Source<'py>>> {
-    let class = spec.cls.bind(object.py());
-    if object.get_type().is(class) || object.is_instance(class)? {
+    if is_real_instance(spec.cls.bind(object.py()), object) {
         return Ok(Some(Source::Instance));
     }
     if let Ok(dict) = object.cast::<PyDict>() {
@@ -438,6 +461,20 @@ fn source_of<'py>(spec: &StructSpec, object: &Bound<'py, PyAny>) -> PyResult<Opt
         return Ok(Some(Source::Mapping(mapping.clone())));
     }
     Ok(can_hold_fields(object).then_some(Source::Object))
+}
+
+/// Whether the real class of `object` is `class` or a subclass of it.
+///
+/// This is what makes reading slots by offset sound, so it must not be `isinstance`: that
+/// honours `__class__` (a `Mock(spec=...)` or a proxy), `__instancecheck__` and
+/// `ABC.register`, and an object that only claims to be an instance has no such slots.
+/// `PyType_IsSubtype` looks at the type and its bases only.
+fn is_real_instance(class: &Bound<'_, PyType>, object: &Bound<'_, PyAny>) -> bool {
+    let object_type = object.get_type();
+    // SAFETY: both pointers come from live type objects that are borrowed for the call.
+    object_type.is(class)
+        || unsafe { pyo3::ffi::PyType_IsSubtype(object_type.as_type_ptr(), class.as_type_ptr()) }
+            != 0
 }
 
 /// The value of `field`, as an attribute or a key of `object`.
@@ -549,7 +586,7 @@ fn matches(
             let spec = &plan.structs[*index];
             match strictness {
                 Strictness::Exact => object.get_type().is(spec.cls.bind(py)),
-                Strictness::Instance => object.is_instance(spec.cls.bind(py))?,
+                Strictness::Instance => is_real_instance(spec.cls.bind(py), object),
                 Strictness::Lenient => match source_of(spec, object)? {
                     Some(source) => has_every_field(spec, object, &source)?,
                     None => false,
@@ -598,7 +635,7 @@ fn has_every_field(
         let present = match source {
             Source::Dict(dict) => dict.contains(name)?,
             Source::Mapping(mapping) => mapping.contains(name)?,
-            Source::Instance | Source::Object => object.hasattr(name)?,
+            Source::Instance | Source::Object => has_static_attribute(object, name)?,
         };
         if !present {
             return Ok(false);
@@ -606,6 +643,22 @@ fn has_every_field(
     }
     Ok(true)
 }
+
+/// Whether `object` has the attribute `name` without running code of the object: no property
+/// and no `__getattr__`, so an object that answers every name does not match every model.
+fn has_static_attribute(object: &Bound<'_, PyAny>, name: &Bound<'_, PyString>) -> PyResult<bool> {
+    let py = object.py();
+    match GETATTR_STATIC
+        .import(py, "inspect", "getattr_static")?
+        .call1((object, name))
+    {
+        Ok(_) => Ok(true),
+        Err(error) if error.is_instance_of::<PyAttributeError>(py) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+static GETATTR_STATIC: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn type_name(object: &Bound<'_, PyAny>) -> String {
     object
