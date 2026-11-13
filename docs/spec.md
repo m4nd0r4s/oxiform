@@ -607,9 +607,9 @@ A config is an oxiform model loaded from several sources in priority order, merg
   - `env_prefix`, `env_nested` and `rename_all` of a section are used only when the section is the type given to `cfg.load`; inside another config the options of the outer type decide (so a section can be shared by two configs).
 - **Optional section:** write `= Server()`. Sharing the default instance is safe because it is immutable, and the type checker sees the default. `Server | None = None` is a section too: it stays `None` until a source sets one of its keys.
 - **Collections:** use `tuple[T, ...]` and `frozenset[T]`. `list`, `set` and `dict` (bare or parameterized) are a `SchemaError` with the right type suggested. `Mapping[K, V]` (a read-only mapping) is not built yet (section 6.7) and is refused with the same kind of message.
-- **Other refusals** at declaration: a flattened field (`ox.field(flatten=True)`: a source cannot say where a flattened section starts), `ox.field(env=...)` that is not a non-empty `str`, and an `env_nested` that is not a non-empty `str` or `None`.
+- **Other refusals** at declaration: a flattened field (`ox.field(flatten=True)`: a source cannot say where a flattened section starts), an `env_prefix` that is not a `str`, and an `env_nested` that is not a non-empty `str` or `None` (a `SchemaError` each); `ox.field(env=...)` that is not a non-empty `str` is a `ValueError` from `ox.field`.
 - `ox.field(env="WEB_CONCURRENCY")` gives the field the exact environment variable name, without `env_prefix` and wherever the field is nested; the derived name (section 6.2) is then not read.
-- Instances are built by `cfg.load`, by calling the class (which checks only the top-level types, D3) or by `ox.replace`.
+- Instances are built by `cfg.load`, by calling the class (which checks only the top-level types, D3) or by `ox.replace`. A config class has a weak-reference slot, which is how `cfg.origin` finds its origins (section 6.4).
 
 ```python
 @ox.config
@@ -633,6 +633,8 @@ class AppConfig:
 ```
 
 (`ox.Url` is a later addition: today a URL is a `str`.)
+
+`examples/server_config.py` loads a `ServerConfig` shaped like the flags of Douro from all five sources and prints the table of key, value and origin with the secrets hidden.
 
 ### 6.2 Sources and priority
 
